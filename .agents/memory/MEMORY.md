@@ -1,0 +1,1 @@
+- [WebMCP preview behavior](webmcp-preview.md) — only claim live agent connectivity when the host exposes document.modelContext.
