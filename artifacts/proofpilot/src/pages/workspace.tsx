@@ -65,7 +65,7 @@ export default function WorkspacePage() {
   const queryClient = useQueryClient();
   const [decision, setDecision] = useState(() => getDecisionStore(activeId));
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [selectedCriterionId, setSelectedCriterionId] = useState('ownership');
+  const [selectedCriterionId, setSelectedCriterionId] = useState('privacy');
   const [evidenceForm, setEvidenceForm] = useState({
     title: '',
     source: '',
@@ -178,12 +178,12 @@ export default function WorkspacePage() {
     );
   };
 
-  const proposeOwnership = () =>
+  const proposePrivacy = () =>
     proposeWeight.mutate(
       {
         decisionId: activeId,
         data: {
-          criterionId: 'ownership',
+          criterionId: 'privacy',
           proposedWeight: 45,
           reason: 'Privacy and control should carry more weight after the team review.',
         },
@@ -198,7 +198,7 @@ export default function WorkspacePage() {
         },
         onError: () => {
           const action = proposeWeightStore(activeId, {
-            criterionId: 'ownership',
+            criterionId: 'privacy',
             proposedWeight: 45,
             reason: 'Privacy and control should carry more weight after the team review.',
           });
@@ -288,11 +288,17 @@ export default function WorkspacePage() {
           options={decision?.options ?? []}
           onRefresh={() => detail.refetch()}
         />
-        <FindingsPanel findings={decision?.findings ?? []} />
+        <FindingsPanel
+          findings={decision?.findings ?? []}
+          onOpenAddEvidence={(initialTitle) => {
+            if (initialTitle) setEvidenceForm((f) => ({ ...f, title: initialTitle }));
+            setEvidenceOpen(true);
+          }}
+        />
         <RiskAndAssumptionsPanel
           decision={decision}
           onRefresh={() => detail.refetch()}
-          onOpenAddEvidence={() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })}
+          onOpenAddEvidence={() => setEvidenceOpen(true)}
         />
 
         <div className="grid gap-5 border-b border-border bg-background px-5 py-8 md:px-10 lg:grid-cols-[1.05fr_.95fr]">
@@ -322,7 +328,7 @@ export default function WorkspacePage() {
               <button
                 type="button"
                 data-testid="button-propose-ownership"
-                onClick={proposeOwnership}
+                onClick={proposePrivacy}
                 disabled={proposeWeight.isPending}
                 className="flex items-center gap-2 rounded-lg border border-[#e1c98c] bg-[#fbf4df] px-3.5 py-2.5 text-[11px] font-bold text-[#896724] transition hover:bg-[#f5e9cb] disabled:opacity-60"
               >

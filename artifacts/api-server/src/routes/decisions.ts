@@ -429,6 +429,44 @@ router.post(
 );
 
 router.post(
+  "/decisions/:decisionId/actions/decision-proposal",
+  async (req, res): Promise<void> => {
+    const { optionId, reason } = req.body as { optionId?: string; reason?: string };
+    if (!optionId || !reason) {
+      res.status(400).json({ error: "optionId and reason are required", code: "INVALID_INPUT" });
+      return;
+    }
+    const row = await findDecision(req.params.decisionId);
+    if (!row) {
+      res.status(404).json({ error: "Decision not found", code: "NOT_FOUND" });
+      return;
+    }
+    const state = asState(row.state);
+    const option = state.options.find((item) => item.id === optionId);
+    if (!option) {
+      res.status(400).json({ error: "Option not found", code: "INVALID_OPTION" });
+      return;
+    }
+    const pending: PendingAction = {
+      id: randomUUID(),
+      type: "decision_proposal",
+      title: `Select ${option.name} as final decision choice`,
+      reason,
+      status: "Pending",
+      proposedAt: new Date().toISOString(),
+    };
+    const next = addActivity(
+      { ...state, pendingActions: [pending, ...state.pendingActions] },
+      "Agent",
+      "Decision proposal submitted",
+      `The agent proposed committing to ${option.name}. Awaiting human approval.`,
+    );
+    await saveState(row.id, next);
+    res.status(201).json(pending);
+  },
+);
+
+router.post(
   "/decisions/:decisionId/actions/:actionId/resolve",
   async (req, res): Promise<void> => {
     const parsed = ResolvePendingActionBody.safeParse(req.body);

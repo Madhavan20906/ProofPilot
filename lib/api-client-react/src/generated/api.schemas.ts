@@ -144,6 +144,7 @@ export interface DecisionState {
   findings: Finding[];
   recommendation: Recommendation;
   pendingActions: PendingAction[];
+  assumptions?: Array<{ id: string; statement?: string; title?: string; status?: string; verified?: boolean; detail?: string; impact?: string; owner?: string }>;
 }
 
 export interface WeightProposalInput {

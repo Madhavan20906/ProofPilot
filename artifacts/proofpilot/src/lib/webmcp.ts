@@ -16,31 +16,50 @@ declare global {
 }
 
 const api = async (path: string, init?: RequestInit) => {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  const payload: unknown = await response.json().catch(() => ({}));
-  if (!response.ok) {
+  try {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      ...init,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      return {
+        ok: false,
+        error: `API returned non-JSON response (${response.status} ${response.statusText})`,
+        status: response.status,
+      };
+    }
+    const payload: unknown = await response.json();
+    if (!response.ok) {
+      return {
+        ok: false,
+        error:
+          typeof payload === "object" && payload !== null && "error" in payload
+            ? String((payload as any).error)
+            : `The ProofPilot API returned HTTP ${response.status}.`,
+        status: response.status,
+      };
+    }
+    return payload;
+  } catch (err) {
     return {
       ok: false,
-      error:
-        typeof payload === "object" && payload !== null && "error" in payload
-          ? String(payload.error)
-          : "The ProofPilot API returned an error.",
-      status: response.status,
+      error: err instanceof Error ? err.message : "Failed to connect to ProofPilot API",
     };
   }
-  return payload;
 };
 
+let activeDecisionGetter: () => string = () => "demo-ai-assistant";
 let registered = false;
 
 export function registerProofPilotTools(getDecisionId: () => string) {
-  if (registered || typeof document === "undefined" || !document.modelContext) {
-    return typeof document !== "undefined" && Boolean(document.modelContext);
+  activeDecisionGetter = getDecisionId;
+  if (typeof document === "undefined" || !document.modelContext) {
+    return false;
   }
-  const statePath = () => `/api/decisions/${getDecisionId()}`;
+  if (registered) return true;
+
+  const statePath = () => `/api/decisions/${activeDecisionGetter()}`;
   const register = (tool: RegisteredTool) =>
     document.modelContext?.registerTool({
       ...tool,
@@ -55,10 +74,10 @@ export function registerProofPilotTools(getDecisionId: () => string) {
                   typeof result === "object" &&
                   result !== null &&
                   "ok" in result &&
-                  result.ok === false
+                  (result as any).ok === false
                     ? "error"
                     : "completed",
-                detail: `decision: ${getDecisionId()}`,
+                detail: `decision: ${activeDecisionGetter()}`,
               },
             }),
           );
@@ -346,17 +365,11 @@ export function registerProofPilotTools(getDecisionId: () => string) {
       required: ["optionId", "reason"],
       additionalProperties: false,
     },
-    execute: async (input) => {
-      const state = (await api(statePath())) as { options?: Array<{ id: string; name: string }> };
-      const opt = (state.options ?? []).find((o) => o.id === input.optionId);
-      return {
-        requiresHumanApproval: true,
-        proposedSelection: opt?.name ?? input.optionId,
-        reason: input.reason,
-        status: "Pending Human Sign-Off",
-        message: "The agent proposed a final decision choice; human approval is required to commit.",
-      };
-    },
+    execute: async (input) =>
+      api(`${statePath()}/actions/decision-proposal`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
   });
 
   // 12. Governance Tool: request_human_review

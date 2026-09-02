@@ -542,10 +542,12 @@ export function RiskAndAssumptionsPanel({
     })),
   ];
 
-  const runRiskAnalysis = () => {
+  const runRiskAnalysis = async () => {
     setIsAnalyzing(true);
-    setTimeout(() => {
-      setIsAnalyzing(false);
+    try {
+      if (decision.id) {
+        await fetch(`/api/decisions/${decision.id}/analyze`, { method: 'POST' }).catch(() => {});
+      }
       onRefresh?.();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(
@@ -558,7 +560,9 @@ export function RiskAndAssumptionsPanel({
           })
         );
       }
-    }, 400);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const toggleAssumption = (id: string) => {
@@ -886,7 +890,13 @@ export function RiskAndAssumptionsPanel({
   );
 }
 
-export function FindingsPanel({ findings }: { findings: DecisionState['findings'] }) {
+export function FindingsPanel({
+  findings,
+  onOpenAddEvidence,
+}: {
+  findings: DecisionState['findings'];
+  onOpenAddEvidence?: (initialTitle?: string) => void;
+}) {
   const styles: Record<string, { icon: typeof Circle; className: string }> = {
     positive: { icon: Check, className: 'bg-[#e7f1ed] text-[#32786e]' },
     attention: { icon: AlertTriangle, className: 'bg-[#f7ead0] text-[#a97922]' },
@@ -923,7 +933,7 @@ export function FindingsPanel({ findings }: { findings: DecisionState['findings'
                   <button
                     type="button"
                     data-testid={`button-investigate-gap-${finding.id}`}
-                    onClick={() => window.alert(`Investigating gap: ${finding.title}. Agent searching for missing evidence.`)}
+                    onClick={() => onOpenAddEvidence?.(finding.title)}
                     className="flex items-center gap-1 font-mono text-[9px] font-bold text-[#b1832f] hover:underline"
                   >
                     Investigate <ArrowRight size={10} />
@@ -954,6 +964,7 @@ export function ApprovalBoundary({ action, onResolve, isPending }: { action?: Pe
       </section>
     );
 
+  const isWeightChange = action.type === 'weight_change' || (action.proposedWeights && Object.keys(action.proposedWeights).length > 0);
   const current = action.currentWeights ?? {};
   const proposed = action.proposedWeights ?? {};
 
@@ -971,13 +982,21 @@ export function ApprovalBoundary({ action, onResolve, isPending }: { action?: Pe
           <Clock3 size={13} /> proposed {formatRelative(action.proposedAt)}
         </div>
       </div>
-      <div className="grid gap-6 p-5 md:grid-cols-[1fr_auto_1fr] md:items-center md:p-6">
-        <WeightList label="Current weights" weights={current} tone="muted" />
-        <div className="flex justify-center text-[#b1832f]">
-          <ArrowRight size={18} />
+      {isWeightChange ? (
+        <div className="grid gap-6 p-5 md:grid-cols-[1fr_auto_1fr] md:items-center md:p-6">
+          <WeightList label="Current weights" weights={current} tone="muted" />
+          <div className="flex justify-center text-[#b1832f]">
+            <ArrowRight size={18} />
+          </div>
+          <WeightList label="Agent proposal" weights={proposed} tone="accent" />
         </div>
-        <WeightList label="Agent proposal" weights={proposed} tone="accent" />
-      </div>
+      ) : (
+        <div className="p-5 md:p-6">
+          <div className="rounded-lg border border-[#e1c98c] bg-[#fff9ec] p-4 text-[12px] text-[#725b2e]">
+            <strong>Proposal:</strong> {action.title}. Approve to commit this decision selection.
+          </div>
+        </div>
+      )}
       <div className="flex flex-col-reverse gap-2 border-t border-[#e4d3a5] bg-[#f8efd7] p-4 sm:flex-row sm:justify-end">
         <button
           type="button"

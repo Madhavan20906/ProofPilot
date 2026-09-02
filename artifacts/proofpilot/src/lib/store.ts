@@ -368,12 +368,62 @@ export function resolveActionStore(id: string, actionId: string, resolution: 'ap
   return updatedDecision;
 }
 
-export function generateSensitivityStore(id: string, criterionId = 'ownership'): SensitivityAnalysis {
+export function proposeDecisionStore(id: string, data: { optionId: string; reason: string }): PendingAction {
+  const decision = getDecisionStore(id);
+  const option = decision.options.find((o) => o.id === data.optionId);
+  const newAction: PendingAction = {
+    id: `action-${Date.now()}`,
+    type: 'decision_proposal',
+    title: `Select ${option?.name ?? data.optionId} as final decision choice`,
+    reason: data.reason,
+    status: 'pending',
+    proposedAt: new Date().toISOString(),
+  };
+
+  const updatedDecision: DecisionState = {
+    ...decision,
+    pendingActions: [newAction, ...decision.pendingActions],
+    updatedAt: new Date().toISOString(),
+  };
+
+  const items = getLocalDecisions();
+  const index = items.findIndex((d) => d.id === id);
+  if (index >= 0) items[index] = updatedDecision;
+  else items.unshift(updatedDecision);
+  saveLocalDecisions(items);
+
+  addLocalActivity(id, {
+    actor: 'ProofPilot agent',
+    action: 'Proposed decision selection',
+    detail: `${newAction.title} · awaiting human sign-off`,
+  });
+
+  return newAction;
+}
+
+export function updateAssumptionsStore(id: string, assumptions: Array<{ id: string; statement: string; status: string; owner?: string }>): DecisionState {
+  const decision = getDecisionStore(id);
+  const updatedDecision: DecisionState = {
+    ...decision,
+    assumptions,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const items = getLocalDecisions();
+  const index = items.findIndex((d) => d.id === id);
+  if (index >= 0) items[index] = updatedDecision;
+  else items.unshift(updatedDecision);
+  saveLocalDecisions(items);
+
+  return updatedDecision;
+}
+
+export function generateSensitivityStore(id: string, criterionId = 'privacy'): SensitivityAnalysis {
   const decision = getDecisionStore(id);
   const criterion = decision.criteria.find((c) => c.id === criterionId) ?? decision.criteria[0];
   const critName = criterion?.name ?? 'Primary criterion';
 
-  const basePoints = [15, 22, 28, 34, 36, 45];
+  const basePoints = [10, 25, 35, 45, 50];
   const points = basePoints.map((weight) => {
     const customWeights: Record<string, number> = {};
     const otherCriteria = decision.criteria.filter((c) => c.id !== (criterion?.id ?? ''));
