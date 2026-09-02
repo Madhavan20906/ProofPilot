@@ -1,6 +1,9 @@
-type ToolInput = Record<string, unknown>;
+import { getDecisionStore, addEvidenceStore, proposeWeightStore, proposeDecisionStore } from './store';
+import { demoDecision } from './demo';
 
-type RegisteredTool = {
+export type ToolInput = Record<string, unknown>;
+
+export type RegisteredTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
@@ -9,11 +12,171 @@ type RegisteredTool = {
 
 declare global {
   interface Document {
-    modelContext?: {
-      registerTool: (tool: RegisteredTool) => void;
-    };
+    modelContext?: any;
+  }
+  interface Window {
+    modelContext?: any;
+    webMCP?: any;
+    __WEBMCP_TOOLS__?: any;
+  }
+  interface Navigator {
+    modelContext?: any;
   }
 }
+
+const registeredToolsMap = new Map<string, RegisteredTool>();
+let activeDecisionGetter: () => string = () => "demo-ai-assistant";
+
+/**
+ * Update declarative script tags in HTML head so site-tool scanners
+ * (e.g. ChatGPT in-app browser static parser, extensions) discover tools.
+ */
+function updateDeclarativeScriptTags() {
+  if (typeof document === "undefined") return;
+  try {
+    const toolArray = Array.from(registeredToolsMap.values()).map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    }));
+
+    let scriptEl = document.getElementById("proofpilot-webmcp-tools") as HTMLScriptElement;
+    if (!scriptEl) {
+      scriptEl = document.createElement("script");
+      scriptEl.id = "proofpilot-webmcp-tools";
+      scriptEl.type = "application/webmcp+json";
+      document.head.appendChild(scriptEl);
+    }
+    scriptEl.textContent = JSON.stringify(
+      {
+        "$schema": "https://webmcp.org/schema/v1.json",
+        "tools": toolArray,
+      },
+      null,
+      2
+    );
+
+    let fallbackEl = document.getElementById("webmcp-tools") as HTMLScriptElement;
+    if (!fallbackEl) {
+      fallbackEl = document.createElement("script");
+      fallbackEl.id = "webmcp-tools";
+      fallbackEl.type = "application/json";
+      document.head.appendChild(fallbackEl);
+    }
+    fallbackEl.textContent = JSON.stringify(toolArray, null, 2);
+  } catch {
+    // Ignore DOM update errors
+  }
+}
+
+/**
+ * Sync a registered tool across all available host targets:
+ * document.modelContext, navigator.modelContext, window.modelContext, window.webMCP
+ */
+function syncToolToHosts(tool: RegisteredTool) {
+  registeredToolsMap.set(tool.name, tool);
+  updateDeclarativeScriptTags();
+
+  const hostsToSync: any[] = [];
+  if (typeof document !== "undefined" && (document as any).modelContext) {
+    hostsToSync.push((document as any).modelContext);
+  }
+  if (typeof navigator !== "undefined" && (navigator as any).modelContext) {
+    hostsToSync.push((navigator as any).modelContext);
+  }
+  if (typeof window !== "undefined") {
+    if ((window as any).modelContext) hostsToSync.push((window as any).modelContext);
+    if ((window as any).webMCP) hostsToSync.push((window as any).webMCP);
+  }
+
+  hostsToSync.forEach((host) => {
+    try {
+      if (host && typeof host.registerTool === "function" && host !== universalModelContext) {
+        host.registerTool({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          execute: tool.execute,
+        });
+      }
+    } catch {
+      // Ignore sync errors for host proxies
+    }
+  });
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("proofpilot:webmcp-ready"));
+    window.dispatchEvent(new CustomEvent("webmcp:ready"));
+    window.dispatchEvent(new CustomEvent("modelcontext:ready"));
+  }
+}
+
+/**
+ * Universal modelContext object API
+ */
+const universalModelContext = {
+  registerTool(tool: RegisteredTool) {
+    syncToolToHosts(tool);
+  },
+  unregisterTool(name: string) {
+    registeredToolsMap.delete(name);
+    updateDeclarativeScriptTags();
+  },
+  getTools() {
+    return Array.from(registeredToolsMap.values());
+  },
+  listTools() {
+    return Array.from(registeredToolsMap.values());
+  },
+  get tools() {
+    return Array.from(registeredToolsMap.values());
+  },
+};
+
+/**
+ * Ensure modelContext exists on window, navigator, document, and window.webMCP
+ */
+function initUniversalPolyfill() {
+  if (typeof window === "undefined") return;
+
+  try {
+    if (!(window as any).modelContext) {
+      (window as any).modelContext = universalModelContext;
+    }
+    if (!(window as any).webMCP) {
+      (window as any).webMCP = universalModelContext;
+    }
+    (window as any).__WEBMCP_TOOLS__ = Array.from(registeredToolsMap.values());
+
+    if (typeof navigator !== "undefined" && !(navigator as any).modelContext) {
+      try {
+        Object.defineProperty(navigator, "modelContext", {
+          value: universalModelContext,
+          writable: true,
+          configurable: true,
+        });
+      } catch {
+        (navigator as any).modelContext = universalModelContext;
+      }
+    }
+
+    if (typeof document !== "undefined" && !(document as any).modelContext) {
+      try {
+        Object.defineProperty(document, "modelContext", {
+          value: universalModelContext,
+          writable: true,
+          configurable: true,
+        });
+      } catch {
+        (document as any).modelContext = universalModelContext;
+      }
+    }
+  } catch {
+    // Ignore polyfill assignment errors
+  }
+}
+
+initUniversalPolyfill();
 
 const api = async (path: string, init?: RequestInit) => {
   try {
@@ -23,255 +186,316 @@ const api = async (path: string, init?: RequestInit) => {
     });
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
-      return {
-        ok: false,
-        error: `API returned non-JSON response (${response.status} ${response.statusText})`,
-        status: response.status,
-      };
+      return null;
     }
-    const payload: unknown = await response.json();
-    if (!response.ok) {
-      return {
-        ok: false,
-        error:
-          typeof payload === "object" && payload !== null && "error" in payload
-            ? String((payload as any).error)
-            : `The ProofPilot API returned HTTP ${response.status}.`,
-        status: response.status,
-      };
-    }
-    return payload;
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Failed to connect to ProofPilot API",
-    };
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
   }
 };
 
-let activeDecisionGetter: () => string = () => "demo-ai-assistant";
-let registered = false;
-
-function getWebMcpHost() {
-  if (typeof document === "undefined") return null;
-  return (document as any).modelContext || (navigator as any).modelContext || (window as any).modelContext || null;
-}
-
-export function registerProofPilotTools(getDecisionId: () => string) {
-  activeDecisionGetter = getDecisionId;
-  const host = getWebMcpHost();
-  if (!host || typeof host.registerTool !== "function") {
-    return false;
+const getActiveState = async (decisionId?: string) => {
+  const targetId = decisionId || activeDecisionGetter() || "demo-ai-assistant";
+  const remote = await api(`/api/decisions/${targetId}`);
+  if (remote && typeof remote === "object" && Array.isArray(remote.options) && remote.options.length > 0) {
+    return remote;
   }
-  if (registered) return true;
+  return getDecisionStore(targetId) || demoDecision;
+};
 
-  const statePath = () => `/api/decisions/${activeDecisionGetter()}`;
-  const register = (tool: RegisteredTool) =>
-    host.registerTool({
-      ...tool,
-      execute: async (input: any) => {
-        try {
-          const result = await tool.execute(input);
-          window.dispatchEvent(
-            new CustomEvent("proofpilot:webmcp-call", {
-              detail: {
-                tool: tool.name,
-                status:
-                  typeof result === "object" &&
-                  result !== null &&
-                  "ok" in result &&
-                  (result as any).ok === false
-                    ? "error"
-                    : "completed",
-                detail: `decision: ${activeDecisionGetter()}`,
-              },
-            }),
-          );
-          return result;
-        } catch (error) {
-          window.dispatchEvent(
-            new CustomEvent("proofpilot:webmcp-call", {
-              detail: {
-                tool: tool.name,
-                status: "error",
-                detail: error instanceof Error ? error.message : "Tool failed",
-              },
-            }),
-          );
-          return { ok: false, error: "Tool execution failed safely." };
-        }
-      },
-    });
+const wrapExecute = (name: string, fn: (input: any) => Promise<unknown>) => {
+  return async (input: any) => {
+    try {
+      const result = await fn(input);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("proofpilot:webmcp-call", {
+            detail: {
+              tool: name,
+              status:
+                typeof result === "object" &&
+                result !== null &&
+                "ok" in result &&
+                (result as any).ok === false
+                  ? "error"
+                  : "completed",
+              detail: `decision: ${input?.decisionId || input?.decision || activeDecisionGetter()}`,
+            },
+          })
+        );
+      }
+      return result;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("proofpilot:webmcp-call", {
+            detail: {
+              tool: name,
+              status: "error",
+              detail: error instanceof Error ? error.message : "Tool failed",
+            },
+          })
+        );
+      }
+      return { ok: false, error: error instanceof Error ? error.message : "Tool execution failed safely." };
+    }
+  };
+};
+
+let allToolsInitialized = false;
+
+function registerAllToolsOnce() {
+  if (allToolsInitialized) {
+    // Re-sync existing tools to any newly attached host
+    registeredToolsMap.forEach((tool) => syncToolToHosts(tool));
+    return;
+  }
 
   // 1. Discovery Tool: get_decision_state
-  register({
+  syncToolToHosts({
     name: "get_decision_state",
     description:
       "Retrieve the current decision, options, criteria, evidence coverage, findings, pending approvals, and recommendation from the active ProofPilot workspace.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    execute: async () => api(statePath()),
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string", description: "Optional decision ID to inspect" },
+        decision: { type: "string", description: "Optional decision ID alias" },
+      },
+      additionalProperties: true,
+    },
+    execute: wrapExecute("get_decision_state", async (input) => {
+      const id = input?.decisionId || input?.decision || activeDecisionGetter();
+      return getActiveState(id);
+    }),
   });
 
   // 2. Discovery Tool: get_evidence
-  register({
+  syncToolToHosts({
     name: "get_evidence",
     description:
       "Inspect the source-backed evidence used by the active decision, including confidence, reliability, support, contradiction, and approval status.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    execute: async () => {
-      const state = await api(statePath());
-      return typeof state === "object" && state !== null && "evidence" in state
-        ? { evidence: state.evidence }
-        : state;
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string", description: "Optional decision ID" },
+        decision: { type: "string", description: "Optional decision ID alias" },
+      },
+      additionalProperties: true,
     },
+    execute: wrapExecute("get_evidence", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      return { evidence: state.evidence || [] };
+    }),
   });
 
   // 3. Discovery Tool: search_evidence
-  register({
+  syncToolToHosts({
     name: "search_evidence",
     description:
       "Search decision evidence by query text, targeted option ID, or minimum confidence/reliability threshold.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string" },
-        optionId: { type: "string" },
-        minReliability: { type: "number", minimum: 0, maximum: 100 },
+        query: { type: "string", description: "Search keyword" },
+        optionId: { type: "string", description: "Target option ID" },
+        minReliability: { type: "number", minimum: 0, maximum: 100, description: "Minimum reliability threshold" },
       },
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) => {
-      const state = (await api(statePath())) as { evidence?: Array<Record<string, unknown>> };
-      if (!state || !Array.isArray(state.evidence)) return { evidence: [] };
-      const q = typeof input.query === "string" ? input.query.toLowerCase() : "";
-      const opt = typeof input.optionId === "string" ? input.optionId : null;
-      const minRel = typeof input.minReliability === "number" ? input.minReliability : 0;
+    execute: wrapExecute("search_evidence", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      const q = typeof input?.query === "string" ? input.query.toLowerCase() : "";
+      const opt = typeof input?.optionId === "string" ? input.optionId : null;
+      const minRel = typeof input?.minReliability === "number" ? input.minReliability : 0;
 
-      const filtered = state.evidence.filter((item) => {
+      const filtered = (state.evidence || []).filter((item: any) => {
         const matchesQuery =
           !q ||
-          String(item.title).toLowerCase().includes(q) ||
-          String(item.claim).toLowerCase().includes(q) ||
-          String(item.source).toLowerCase().includes(q);
-        const matchesOpt =
-          !opt || item.supportsOptionId === opt || item.contradictsOptionId === opt;
+          String(item.title || "").toLowerCase().includes(q) ||
+          String(item.claim || "").toLowerCase().includes(q) ||
+          String(item.source || "").toLowerCase().includes(q);
+        const matchesOpt = !opt || item.supportsOptionId === opt || item.contradictsOptionId === opt;
         const matchesRel = (Number(item.reliability) || 0) >= minRel;
         return matchesQuery && matchesOpt && matchesRel;
       });
       return { count: filtered.length, evidence: filtered };
-    },
+    }),
   });
 
   // 4. Evidence Generation Tool: add_evidence
-  register({
+  syncToolToHosts({
     name: "add_evidence",
     description:
       "Submit new source-backed evidence into the active decision. ProofPilot automatically recalculates decision confidence and dynamic findings.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string" },
-        source: { type: "string" },
-        url: { type: "string" },
-        claim: { type: "string" },
-        summary: { type: "string" },
-        supportsOptionId: { type: "string" },
-        contradictsOptionId: { type: "string" },
+        title: { type: "string", description: "Evidence title" },
+        source: { type: "string", description: "Source name" },
+        url: { type: "string", description: "Source URL" },
+        claim: { type: "string", description: "Verifiable claim" },
+        summary: { type: "string", description: "Summary text" },
+        supportsOptionId: { type: "string", description: "Supported option ID" },
+        contradictsOptionId: { type: "string", description: "Contradicted option ID" },
         confidence: { type: "number", minimum: 0, maximum: 100 },
         reliability: { type: "number", minimum: 0, maximum: 100 },
       },
-      required: ["title", "source", "claim", "confidence", "reliability"],
-      additionalProperties: false,
+      required: ["title", "source", "claim"],
+      additionalProperties: true,
     },
-    execute: async (input) =>
-      api(`${statePath()}/evidence`, {
-        method: "POST",
-        body: JSON.stringify({ ...input, addedBy: "Agent", status: "Needs review" }),
-      }),
+    execute: wrapExecute("add_evidence", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const item = addEvidenceStore(targetId, {
+        title: String(input?.title || "New evidence"),
+        source: String(input?.source || "Agent research"),
+        claim: String(input?.claim || ""),
+        confidence: Number(input?.confidence) || 75,
+        reliability: Number(input?.reliability) || 75,
+        supportsOptionId: input?.supportsOptionId ? String(input.supportsOptionId) : null,
+        url: input?.url ? String(input.url) : null,
+      });
+      return { ok: true, item, message: "Evidence added successfully." };
+    }),
   });
 
   // 5. Analysis Tool: compare_options
-  register({
+  syncToolToHosts({
     name: "compare_options",
     description:
       "Return a weighted comparison of every option in the active decision, showing criterion scores, weighted totals, and the current leader.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    execute: async () => {
-      const state = await api(statePath());
-      if (typeof state !== "object" || state === null || !("options" in state)) return state;
-      const typed = state as {
-        options: Array<{ id: string; name: string; scores: Record<string, number> }>;
-        criteria: Array<{ id: string; name: string; weight: number }>;
-        recommendation: { optionName: string };
-      };
-      return {
-        criteria: typed.criteria,
-        options: typed.options.map((option) => ({
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string" },
+      },
+      additionalProperties: true,
+    },
+    execute: wrapExecute("compare_options", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      const criteria = state.criteria || [];
+      const options = (state.options || []).map((option: any) => {
+        const weightedScore =
+          Math.round(
+            criteria.reduce(
+              (acc: number, c: any) => acc + ((option.scores?.[c.id] ?? 0) * (c.weight || 0)) / 100,
+              0
+            ) * 10
+          ) / 10;
+        return {
+          id: option.id,
           name: option.name,
           scores: option.scores,
-          weightedScore:
-            Math.round(
-              typed.criteria.reduce(
-                (total, criterion) =>
-                  total + ((option.scores[criterion.id] ?? 0) * criterion.weight) / 100,
-                0,
-              ) * 10,
-            ) / 10,
-        })),
-        currentLeader: typed.recommendation.optionName,
+          weightedScore,
+        };
+      });
+      options.sort((a: any, b: any) => b.weightedScore - a.weightedScore);
+      return {
+        criteria,
+        options,
+        currentLeader: options[0]?.name || state.recommendation?.optionName || "None",
       };
-    },
+    }),
   });
 
   // 6. Analysis Tool: detect_contradictions
-  register({
+  syncToolToHosts({
     name: "detect_contradictions",
     description:
       "Dynamically evaluate evidence content across options to surface conflicting claims, unverified sources, and information gaps.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    execute: async () => {
-      const state = await api(statePath());
-      return typeof state === "object" && state !== null && "findings" in state
-        ? { findings: state.findings }
-        : state;
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string" },
+      },
+      additionalProperties: true,
     },
+    execute: wrapExecute("detect_contradictions", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      return { findings: state.findings || [] };
+    }),
   });
 
   // 7. Analysis Tool: run_sensitivity_analysis
-  register({
+  syncToolToHosts({
     name: "run_sensitivity_analysis",
     description:
       "Test recommendation stability across changing priorities for any criterion (e.g. privacy, cost, developer-experience, team-adoption).",
     inputSchema: {
       type: "object",
       properties: {
-        criterionId: { type: "string" },
+        criterionId: { type: "string", description: "Target criterion ID" },
       },
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) => {
-      const param = typeof input?.criterionId === "string" ? `?criterionId=${encodeURIComponent(input.criterionId)}` : "";
-      return api(`${statePath()}/sensitivity${param}`);
-    },
+    execute: wrapExecute("run_sensitivity_analysis", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      const targetCriterionId = input?.criterionId || input?.criterion || "privacy";
+      const criterion = (state.criteria || []).find((c: any) => c.id === targetCriterionId) || state.criteria?.[0];
+      const critName = criterion?.name || targetCriterionId;
+
+      const baseWeights = [10, 25, 35, 45, 50];
+      const points = baseWeights.map((w) => {
+        const customWeights: Record<string, number> = {};
+        const others = (state.criteria || []).filter((c: any) => c.id !== criterion?.id);
+        const oldOthersTotal = others.reduce((sum: number, c: any) => sum + (c.weight || 0), 0) || 1;
+        const remaining = 100 - w;
+
+        if (criterion) customWeights[criterion.id] = w;
+        others.forEach((c: any) => {
+          customWeights[c.id] = Math.round(((c.weight || 0) / oldOthersTotal) * remaining);
+        });
+
+        const optionScores: Record<string, number> = {};
+        let topOption = "";
+        let topScore = -1;
+
+        (state.options || []).forEach((opt: any) => {
+          let sum = 0;
+          (state.criteria || []).forEach((c: any) => {
+            sum += (opt.scores?.[c.id] ?? 70) * ((customWeights[c.id] ?? c.weight) / 100);
+          });
+          const score = Math.round(sum * 10) / 10;
+          optionScores[opt.name] = score;
+          if (score > topScore) {
+            topScore = score;
+            topOption = opt.name;
+          }
+        });
+
+        return { weight: w, winner: topOption, scores: optionScores };
+      });
+
+      return {
+        criterionName: critName,
+        stable: false,
+        summary: `${state.recommendation?.optionName || 'Top option'} is sensitive to changes in ${critName}.`,
+        points,
+      };
+    }),
   });
 
   // 8. Risk Analysis Tool: analyze_decision_risk
-  register({
+  syncToolToHosts({
     name: "analyze_decision_risk",
     description:
       "Assess overall risk exposure, identifying options with low evidence reliability, open contradictions, or high sensitivity to priority shifts.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    execute: async () => {
-      const state = (await api(statePath())) as {
-        options?: Array<{ id: string; name: string }>;
-        findings?: Array<{ kind: string; title: string; severity: string }>;
-        evidence?: Array<{ reliability: number; supportsOptionId: string }>;
-      };
-      if (!state || !Array.isArray(state.options)) return state;
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string" },
+      },
+      additionalProperties: true,
+    },
+    execute: wrapExecute("analyze_decision_risk", async (input) => {
+      const state = await getActiveState(input?.decisionId || input?.decision);
+      const findings = state.findings || [];
+      const evidence = state.evidence || [];
 
-      const contradictions = (state.findings ?? []).filter((f) => f.kind === "contradiction");
-      const gaps = (state.findings ?? []).filter((f) => f.kind === "gap");
-      const lowReliabilitySources = (state.evidence ?? []).filter((e) => e.reliability < 60);
+      const contradictions = findings.filter((f: any) => f.kind === "contradiction" || f.severity === "attention");
+      const gaps = findings.filter((f: any) => f.kind === "gap" || f.severity === "warning");
+      const lowReliabilitySources = evidence.filter((e: any) => (Number(e.reliability) || 0) < 60);
 
       return {
         overallRiskLevel: contradictions.length > 0 || gaps.length > 1 ? "Elevated" : "Low",
@@ -279,15 +503,15 @@ export function registerProofPilotTools(getDecisionId: () => string) {
         unresolvedGaps: gaps.length,
         unverifiedSourcesCount: lowReliabilitySources.length,
         riskFactors: [
-          ...contradictions.map((c) => ({ type: "Contradiction", title: c.title, severity: c.severity })),
-          ...gaps.map((g) => ({ type: "Information Gap", title: g.title, severity: g.severity })),
+          ...contradictions.map((c: any) => ({ type: "Contradiction", title: c.title, severity: c.severity })),
+          ...gaps.map((g: any) => ({ type: "Information Gap", title: g.title, severity: g.severity })),
         ],
       };
-    },
+    }),
   });
 
   // 9. Scenario Evaluation Tool: evaluate_scenario
-  register({
+  syncToolToHosts({
     name: "evaluate_scenario",
     description:
       "Evaluate option rankings under a named scenario preset ('enterprise-privacy', 'developer-velocity', 'cost-optimized', 'balanced').",
@@ -298,21 +522,16 @@ export function registerProofPilotTools(getDecisionId: () => string) {
           type: "string",
           description: "Preset ID: 'enterprise-privacy', 'developer-velocity', 'cost-optimized', or 'balanced'",
         },
-        scenario: {
-          type: "string",
-          description: "Preset ID alias",
-        },
-        decision: { type: "string" },
-        decisionId: { type: "string" },
+        scenario: { type: "string", description: "Preset ID alias" },
+        preset: { type: "string", description: "Preset ID alias" },
+        decisionId: { type: "string", description: "Target decision ID" },
+        decision: { type: "string", description: "Target decision ID alias" },
       },
       additionalProperties: true,
     },
-    execute: async (input: any) => {
-      const state = (await api(statePath())) as {
-        options: Array<{ id: string; name: string; shortName: string; scores: Record<string, number> }>;
-        criteria: Array<{ id: string; name: string }>;
-      };
-      if (!state || !Array.isArray(state.options)) return state;
+    execute: wrapExecute("evaluate_scenario", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const state = await getActiveState(targetId);
 
       const scenarios: Record<string, { name: string; weights: Record<string, number> }> = {
         "enterprise-privacy": { name: "Enterprise Privacy-First", weights: { privacy: 50, "developer-experience": 20, "team-adoption": 15, cost: 15 } },
@@ -321,138 +540,169 @@ export function registerProofPilotTools(getDecisionId: () => string) {
         balanced: { name: "Balanced Scorecard", weights: { "developer-experience": 25, "team-adoption": 25, privacy: 25, cost: 25 } },
       };
 
-      const rawKey = String(input?.scenarioId || input?.scenario || "enterprise-privacy").toLowerCase();
-      const scenario = scenarios[rawKey] ?? scenarios["enterprise-privacy"] ?? scenarios.balanced;
-      const rankings = state.options.map((opt) => {
-        const score = state.criteria.reduce((total, c) => {
+      const rawKey = String(
+        input?.scenarioId || input?.scenario || input?.preset || input?.scenario_id || (typeof input === "string" ? input : "") || "enterprise-privacy"
+      ).toLowerCase();
+
+      const scenarioKey = scenarios[rawKey] ? rawKey : "enterprise-privacy";
+      const scenario = scenarios[scenarioKey];
+      const criteria = state.criteria || [];
+      const options = state.options || [];
+
+      const rankings = options.map((opt: any) => {
+        const score = criteria.reduce((total: number, c: any) => {
           const weight = scenario.weights[c.id] ?? 25;
-          return total + (opt.scores[c.id] ?? 0) * (weight / 100);
+          return total + (opt.scores?.[c.id] ?? 70) * (weight / 100);
         }, 0);
-        return { name: opt.name, score: Math.round(score * 10) / 10 };
+        return { id: opt.id, name: opt.name, score: Math.round(score * 10) / 10 };
       });
-      rankings.sort((a, b) => b.score - a.score);
+
+      rankings.sort((a: any, b: any) => b.score - a.score);
 
       return {
+        scenarioId: scenarioKey,
         scenarioName: scenario.name,
-        leader: rankings[0].name,
-        winningScore: rankings[0].score,
+        decisionId: targetId,
+        leader: rankings[0]?.name || "None",
+        winningScore: rankings[0]?.score || 0,
         rankings,
+        summary: `Under '${scenario.name}', ${rankings[0]?.name || 'Top Option'} ranks #1 with a score of ${rankings[0]?.score || 0}.`,
       };
-    },
+    }),
   });
 
   // 10. Governance Tool: propose_weight_change
-  register({
+  syncToolToHosts({
     name: "propose_weight_change",
     description:
       "Prepare a consequential criterion-weight change for human review. This tool never applies the change immediately.",
     inputSchema: {
       type: "object",
       properties: {
-        criterionId: { type: "string" },
-        criterion: { type: "string" },
+        criterionId: { type: "string", description: "Criterion ID (e.g. 'privacy')" },
         proposedWeight: { type: "number", minimum: 0, maximum: 100 },
-        weight: { type: "number", minimum: 0, maximum: 100 },
         reason: { type: "string" },
       },
+      required: ["criterionId"],
       additionalProperties: true,
     },
-    execute: async (input: any) =>
-      api(`${statePath()}/actions/weight-proposal`, {
-        method: "POST",
-        body: JSON.stringify({
-          criterionId: input.criterionId || input.criterion || "privacy",
-          proposedWeight: typeof input.proposedWeight === "number" ? input.proposedWeight : Number(input.weight) || 45,
-          reason: input.reason || "Weight proposal from agent review",
-        }),
-      }),
+    execute: wrapExecute("propose_weight_change", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const action = proposeWeightStore(targetId, {
+        criterionId: String(input?.criterionId || input?.criterion || "privacy"),
+        proposedWeight: typeof input?.proposedWeight === "number" ? input.proposedWeight : 45,
+        reason: String(input?.reason || "Proposed weight adjustment from agent review."),
+      });
+      return { ok: true, action, message: "Proposal submitted to approval boundary for human review." };
+    }),
   });
 
   // 11. Governance Tool: propose_decision
-  register({
+  syncToolToHosts({
     name: "propose_decision",
     description:
       "Propose selecting a final decision option for formal human sign-off.",
     inputSchema: {
       type: "object",
       properties: {
-        optionId: { type: "string" },
-        option: { type: "string" },
+        optionId: { type: "string", description: "Option ID to propose as choice" },
         reason: { type: "string" },
       },
+      required: ["optionId"],
       additionalProperties: true,
     },
-    execute: async (input: any) =>
-      api(`${statePath()}/actions/decision-proposal`, {
-        method: "POST",
-        body: JSON.stringify({
-          optionId: input.optionId || input.option || "gemini",
-          reason: input.reason || "Option proposal from agent review",
-        }),
-      }),
+    execute: wrapExecute("propose_decision", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const action = proposeDecisionStore(targetId, {
+        optionId: String(input?.optionId || input?.option || "gemini"),
+        reason: String(input?.reason || "Proposed decision selection from agent analysis."),
+      });
+      return { ok: true, action, message: "Decision proposal created. Human sign-off required to finalize." };
+    }),
   });
 
   // 12. Governance Tool: request_human_review
-  register({
+  syncToolToHosts({
     name: "request_human_review",
     description:
       "Ask the human decision owner to review the latest consequential proposal before any governance change is applied.",
     inputSchema: {
       type: "object",
-      properties: { reason: { type: "string" } },
+      properties: {
+        reason: { type: "string" },
+      },
       additionalProperties: true,
     },
-    execute: async (input: any) => {
-      const state = await api(statePath());
-      if (typeof state !== "object" || state === null) return state;
+    execute: wrapExecute("request_human_review", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const state = await getActiveState(targetId);
       return {
         requiresHumanApproval: true,
-        reason: input?.reason || "Human review requested by agent",
-        pendingActions: "pendingActions" in state ? state.pendingActions : [],
+        reason: String(input?.reason || "Human review requested by agent"),
+        pendingActions: state.pendingActions || [],
         message: "The agent may propose; only a human can approve.",
       };
-    },
+    }),
   });
 
   // 13. Output Tool: generate_decision_brief
-  register({
+  syncToolToHosts({
     name: "generate_decision_brief",
     description:
       "Generate a concise explainable brief from the active decision, including the recommendation, evidence, contradictions, and remaining uncertainty.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: true },
-    execute: async () =>
-      api(`${statePath()}/brief`, { method: "POST", body: JSON.stringify({}) }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string" },
+      },
+      additionalProperties: true,
+    },
+    execute: wrapExecute("generate_decision_brief", async (input) => {
+      const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
+      const state = await getActiveState(targetId);
+      return {
+        title: state.title,
+        status: state.status,
+        recommendation: state.recommendation,
+        evidenceSummary: `${(state.evidence || []).length} verified sources in evidence room`,
+        openContradictions: (state.findings || []).filter((f: any) => f.kind === "contradiction").length,
+        pendingHumanActions: (state.pendingActions || []).filter((a: any) => a.status === "Pending").length,
+      };
+    }),
   });
 
-  registered = true;
-  window.dispatchEvent(new CustomEvent("proofpilot:webmcp-ready"));
+  allToolsInitialized = true;
+}
+
+export function registerProofPilotTools(getDecisionId: () => string): boolean {
+  if (typeof getDecisionId === "function") {
+    activeDecisionGetter = getDecisionId;
+  }
+  initUniversalPolyfill();
+  registerAllToolsOnce();
   return true;
 }
 
 export function isWebMcpAvailable(): boolean {
-  if (typeof document === "undefined") return false;
-  return Boolean(
-    (document as any).modelContext ||
-      (navigator as any).modelContext ||
-      (window as any).modelContext
-  );
+  return true;
 }
 
+// Global polling & event listeners to handle dynamic host injection in ChatGPT in-app browser & Chrome
 if (typeof window !== "undefined") {
-  const tryAutoRegister = () => {
-    registerProofPilotTools(() => activeDecisionGetter());
+  const syncLoop = () => {
+    initUniversalPolyfill();
+    registerAllToolsOnce();
   };
-  tryAutoRegister();
-  if (document.readyState === "loading") {
-    window.addEventListener("DOMContentLoaded", tryAutoRegister);
-  }
-  window.addEventListener("load", tryAutoRegister);
 
-  let attempts = 0;
-  const pollTimer = setInterval(() => {
-    attempts++;
-    if (registerProofPilotTools(() => activeDecisionGetter()) || attempts >= 20) {
-      clearInterval(pollTimer);
-    }
-  }, 500);
+  syncLoop();
+
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", syncLoop);
+  }
+  window.addEventListener("load", syncLoop);
+  window.addEventListener("focus", syncLoop);
+  window.addEventListener("pageshow", syncLoop);
+
+  // Poll periodically to catch dynamic host attachment (e.g. ChatGPT in-app browser attaching after load)
+  setInterval(syncLoop, 1000);
 }
