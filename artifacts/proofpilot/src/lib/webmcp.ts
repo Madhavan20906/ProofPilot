@@ -28,12 +28,12 @@ const registeredToolsMap = new Map<string, RegisteredTool>();
 let activeDecisionGetter: () => string = () => "demo-ai-assistant";
 
 /**
- * Fallback polyfill object for environments without native WebMCP host.
+ * Universal modelContext polyfill object.
+ * Always exposes registerTool, unregisterTool, getTools, listTools, and tools array.
  */
 const polyfillModelContext = {
   registerTool(tool: RegisteredTool) {
-    registeredToolsMap.set(tool.name, tool);
-    updateDeclarativeDOM();
+    registerToolWithHosts(tool);
   },
   unregisterTool(name: string) {
     registeredToolsMap.delete(name);
@@ -111,8 +111,7 @@ function updateDeclarativeDOM() {
 }
 
 /**
- * Safe registration function that calls document.modelContext.registerTool
- * directly on native hosts without replacing native host objects.
+ * Register tool centrally and forward to any native host target if present
  */
 function registerToolWithHosts(tool: RegisteredTool) {
   registeredToolsMap.set(tool.name, tool);
@@ -142,13 +141,14 @@ function registerToolWithHosts(tool: RegisteredTool) {
         if (res && typeof res.catch === "function") {
           res.catch(() => {});
         }
-      } catch (err) {
-        // Ignore individual host registration errors
+      } catch {
+        // Ignore native host registration errors
       }
     }
   });
 
   if (typeof window !== "undefined") {
+    (window as any).__WEBMCP_TOOLS__ = Array.from(registeredToolsMap.values());
     window.dispatchEvent(new CustomEvent("proofpilot:webmcp-ready"));
     window.dispatchEvent(new CustomEvent("webmcp:ready"));
     window.dispatchEvent(new CustomEvent("modelcontext:ready"));
@@ -156,34 +156,43 @@ function registerToolWithHosts(tool: RegisteredTool) {
 }
 
 /**
- * Ensures polyfill exists ONLY if no native host object is detected.
+ * Initialize modelContext polyfill on document, navigator, and window
  */
-function ensurePolyfillIfNoNative() {
+function initModelContextPolyfill() {
   if (typeof document === "undefined") return;
 
-  const hasNative = Boolean(
-    ((document as any).modelContext && (document as any).modelContext !== polyfillModelContext) ||
-      ((navigator as any).modelContext && (navigator as any).modelContext !== polyfillModelContext) ||
-      ((window as any).modelContext && (window as any).modelContext !== polyfillModelContext)
-  );
-
-  if (!hasNative) {
-    if (!(document as any).modelContext) {
+  if (!(document as any).modelContext) {
+    try {
+      Object.defineProperty(document, "modelContext", {
+        value: polyfillModelContext,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
       (document as any).modelContext = polyfillModelContext;
     }
-    if (typeof navigator !== "undefined" && !(navigator as any).modelContext) {
+  }
+
+  if (typeof navigator !== "undefined" && !(navigator as any).modelContext) {
+    try {
+      Object.defineProperty(navigator, "modelContext", {
+        value: polyfillModelContext,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
       (navigator as any).modelContext = polyfillModelContext;
     }
-    if (typeof window !== "undefined" && !(window as any).modelContext) {
-      (window as any).modelContext = polyfillModelContext;
-    }
-    if (typeof window !== "undefined" && !(window as any).webMCP) {
-      (window as any).webMCP = polyfillModelContext;
-    }
+  }
+
+  if (typeof window !== "undefined") {
+    if (!(window as any).modelContext) (window as any).modelContext = polyfillModelContext;
+    if (!(window as any).webMCP) (window as any).webMCP = polyfillModelContext;
+    (window as any).__WEBMCP_TOOLS__ = Array.from(registeredToolsMap.values());
   }
 }
 
-ensurePolyfillIfNoNative();
+initModelContextPolyfill();
 
 const api = async (path: string, init?: RequestInit) => {
   try {
@@ -262,7 +271,7 @@ const wrapExecute = (name: string, fn: (input: any) => Promise<any>) => {
 let allToolsInitialized = false;
 
 function registerAllToolsOnce() {
-  ensurePolyfillIfNoNative();
+  initModelContextPolyfill();
 
   if (allToolsInitialized) {
     registeredToolsMap.forEach((tool) => registerToolWithHosts(tool));
