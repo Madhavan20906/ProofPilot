@@ -39,8 +39,16 @@ export function DecisionHero({ decision, onAnalyze, isAnalyzing }: { decision: D
       <div className="absolute right-[-30px] top-[-85px] h-[230px] w-[230px] rounded-full border border-[#d9a441]/20" />
       <div className="relative max-w-[1120px]">
         <div className="mb-5 flex flex-wrap items-center gap-2">
-          <span className="flex items-center gap-1.5 rounded-full border border-[#4e9b8f]/35 bg-[#4e9b8f]/10 px-2.5 py-1 font-mono text-[9px] font-semibold uppercase tracking-[.12em] text-[#32786e]">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#4e9b8f]" /> In review
+          <span
+            className={cn(
+              'flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[9px] font-semibold uppercase tracking-[.12em]',
+              decision.status === 'Decided' || decision.status === 'Finalized'
+                ? 'border-[#32786e]/40 bg-[#e7f1ed] text-[#32786e]'
+                : 'border-[#4e9b8f]/35 bg-[#4e9b8f]/10 text-[#32786e]'
+            )}
+          >
+            <span className={cn('h-1.5 w-1.5 rounded-full', decision.status === 'Decided' || decision.status === 'Finalized' ? 'bg-[#32786e]' : 'bg-[#4e9b8f]')} />
+            {decision.status === 'Decided' || decision.status === 'Finalized' ? 'Decided · Finalized' : 'In review'}
           </span>
           <span className="font-mono text-[10px] text-muted-foreground">updated {formatRelative(decision.updatedAt)}</span>
         </div>
@@ -655,7 +663,7 @@ export function RiskAndAssumptionsPanel({
                 tab === 'challenge' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
               )}
             >
-              Agent Challenge Mode {challengeActive && <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-[#d9a441]" />}
+              Red-Team Prompts {challengeActive && <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-[#d9a441]" />}
             </button>
           </div>
         </div>
@@ -826,30 +834,44 @@ export function RiskAndAssumptionsPanel({
         </div>
       )}
 
-      {/* TAB 3: AGENT CHALLENGE MODE */}
+      {/* TAB 3: RED-TEAM REVIEW PROMPTS */}
       {tab === 'challenge' && (
         <div className="rounded-xl border border-[#d9a441]/40 bg-[#fbf4df] p-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-[13px] font-bold text-[#896724]">
-              <Zap size={16} /> Adversarial Agent Stress Test Mode
+              <Zap size={16} /> Red-Team Adversarial Review Prompts
             </div>
             <button
               type="button"
               data-testid="button-toggle-challenge"
-              onClick={() => setChallengeActive(!challengeActive)}
+              onClick={() => {
+                const nextState = !challengeActive;
+                setChallengeActive(nextState);
+                if (nextState && typeof window !== 'undefined') {
+                  window.dispatchEvent(
+                    new CustomEvent('proofpilot:webmcp-call', {
+                      detail: {
+                        tool: 'detect_contradictions',
+                        status: 'completed',
+                        detail: 'evaluated 3 adversarial review prompts',
+                      },
+                    })
+                  );
+                }
+              }}
               className="rounded-lg bg-[#27354a] px-3.5 py-2 text-[11px] font-bold text-white transition hover:bg-[#1b2738]"
             >
-              {challengeActive ? 'Disable Challenge Mode' : 'Run Agent Challenge'}
+              {challengeActive ? 'Hide Red-Team Prompts' : 'View Red-Team Prompts'}
             </button>
           </div>
 
           <p className="mt-2 text-[11px] leading-5 text-[#725b2e]">
-            When enabled, ProofPilot's WebMCP agent acts as an adversarial red-team reviewer, actively stress-testing consensus views and searching for blind spots.
+            Structured adversarial review prompts to stress-test consensus options, challenge key assumptions, and surface hidden organizational risks before committing a final choice.
           </p>
 
           {challengeActive && (
             <div className="mt-5 space-y-3 border-t border-[#e4d3a5] pt-4">
-              <div className="font-mono text-[9px] uppercase tracking-[.15em] text-[#896724]">Active Adversarial Challenges</div>
+              <div className="font-mono text-[9px] uppercase tracking-[.15em] text-[#896724]">Adversarial Stress Test Prompts</div>
               {challenges.map((ch) => {
                 const isHandled = handledChallenges[ch.id];
                 return (

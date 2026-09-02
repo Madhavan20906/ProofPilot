@@ -17,4 +17,5 @@ export interface PendingAction {
   proposedAt: Date;
   currentWeights?: PendingActionCurrentWeights;
   proposedWeights?: PendingActionProposedWeights;
+  proposedOptionId?: string;
 }

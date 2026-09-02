@@ -155,6 +155,7 @@ export default function WorkspacePage() {
   const resolve = (resolution: 'approved' | 'rejected') => {
     const action = (decision?.pendingActions ?? []).find((item) => item?.status?.toLowerCase() === 'pending');
     if (!action) return;
+    const isDecisionProp = action.type === 'decision_proposal' || Boolean(action.proposedOptionId);
     resolveAction.mutate(
       { decisionId: activeId, actionId: action.id, data: { resolution } },
       {
@@ -163,7 +164,9 @@ export default function WorkspacePage() {
           queryClient.setQueryData(getGetDecisionQueryKey(activeId), next);
           toast({
             title: resolution === 'approved' ? 'Proposal approved' : 'Proposal rejected',
-            description: resolution === 'approved' ? 'The criteria weights are now active.' : 'The agent will keep the current weights.',
+            description: resolution === 'approved'
+              ? (isDecisionProp ? 'Final decision choice committed and recorded.' : 'The criteria weights are now active.')
+              : 'The agent proposal was rejected. Previous state retained.',
           });
         },
         onError: () => {
@@ -171,7 +174,9 @@ export default function WorkspacePage() {
           setDecision(updated);
           toast({
             title: resolution === 'approved' ? 'Proposal approved' : 'Proposal rejected',
-            description: resolution === 'approved' ? 'The criteria weights are now active.' : 'The agent will keep the current weights.',
+            description: resolution === 'approved'
+              ? (isDecisionProp ? 'Final decision choice committed and recorded.' : 'The criteria weights are now active.')
+              : 'The agent proposal was rejected. Previous state retained.',
           });
         },
       }

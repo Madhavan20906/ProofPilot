@@ -335,19 +335,49 @@ export function resolveActionStore(id: string, actionId: string, resolution: 'ap
   );
 
   let updatedCriteria = decision.criteria;
-  if (resolution === 'approved' && action?.proposedWeights) {
-    const proposedWeights = action.proposedWeights;
-    updatedCriteria = decision.criteria.map((c) => ({
-      ...c,
-      weight: proposedWeights[c.id] ?? c.weight,
-    }));
+  let updatedStatus = decision.status;
+
+  const isDecisionProposal = action?.type === 'decision_proposal' || Boolean(action?.proposedOptionId);
+
+  if (resolution === 'approved') {
+    if (action?.proposedWeights) {
+      const proposedWeights = action.proposedWeights;
+      updatedCriteria = decision.criteria.map((c) => ({
+        ...c,
+        weight: proposedWeights[c.id] ?? c.weight,
+      }));
+    } else if (isDecisionProposal) {
+      updatedStatus = 'Decided';
+    }
   }
 
-  const updatedRec = calculateRecommendation(decision.options, updatedCriteria, decision.evidence);
+  let updatedRec = calculateRecommendation(decision.options, updatedCriteria, decision.evidence);
+
+  if (resolution === 'approved' && isDecisionProposal) {
+    const targetOptionId = action?.proposedOptionId || decision.options.find((o) => action?.title.includes(o.name))?.id;
+    const targetOption = decision.options.find((o) => o.id === targetOptionId);
+    if (targetOption) {
+      const optionScore = Math.round(
+        updatedCriteria.reduce((acc, c) => acc + (targetOption.scores?.[c.id] ?? 70) * (c.weight / 100), 0) * 10
+      ) / 10;
+      updatedRec = {
+        ...updatedRec,
+        optionId: targetOption.id,
+        optionName: targetOption.name,
+        score: optionScore,
+        why: [
+          `Formally committed as final decision choice following human sign-off.`,
+          `${targetOption.name} was approved over competing options by human decision owner.`,
+          ...updatedRec.why.filter((w) => !w.startsWith('Formally committed')),
+        ],
+      };
+    }
+  }
 
   const updatedDecision: DecisionState = {
     ...decision,
     criteria: updatedCriteria,
+    status: updatedStatus,
     recommendation: updatedRec,
     pendingActions: updatedActions,
     updatedAt: new Date().toISOString(),
@@ -362,7 +392,7 @@ export function resolveActionStore(id: string, actionId: string, resolution: 'ap
   addLocalActivity(id, {
     actor: 'Madhavan',
     action: resolution === 'approved' ? 'Approved proposal' : 'Rejected proposal',
-    detail: action?.title ?? 'Weight change proposal',
+    detail: action?.title ?? 'Proposal resolution',
   });
 
   return updatedDecision;
@@ -378,6 +408,7 @@ export function proposeDecisionStore(id: string, data: { optionId: string; reaso
     reason: data.reason,
     status: 'pending',
     proposedAt: new Date().toISOString(),
+    proposedOptionId: data.optionId,
   };
 
   const updatedDecision: DecisionState = {

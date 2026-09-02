@@ -454,6 +454,7 @@ router.post(
       reason,
       status: "Pending",
       proposedAt: new Date().toISOString(),
+      proposedOptionId: option.id,
     };
     const next = addActivity(
       { ...state, pendingActions: [pending, ...state.pendingActions] },
@@ -486,23 +487,58 @@ router.post(
       return;
     }
     let next = state;
-    if (parsed.data.resolution === "approved" && action.proposedWeights) {
-      next = {
-        ...state,
-        criteria: state.criteria.map((criterion) => ({
-          ...criterion,
-          weight: action.proposedWeights?.[criterion.id] ?? criterion.weight,
-        })),
-      };
+    const isDecisionProposal = action.type === "decision_proposal" || Boolean(action.proposedOptionId);
+    if (parsed.data.resolution === "approved") {
+      if (action.proposedWeights) {
+        next = {
+          ...state,
+          criteria: state.criteria.map((criterion) => ({
+            ...criterion,
+            weight: action.proposedWeights?.[criterion.id] ?? criterion.weight,
+          })),
+        };
+      } else if (isDecisionProposal) {
+        const targetOptionId = action.proposedOptionId || state.options.find((o) => action.title.includes(o.name))?.id;
+        const targetOption = state.options.find((o) => o.id === targetOptionId);
+        if (targetOption) {
+          next = {
+            ...state,
+            status: "Decided",
+            recommendation: {
+              ...state.recommendation,
+              optionId: targetOption.id,
+              optionName: targetOption.name,
+              score: Math.round(
+                state.criteria.reduce(
+                  (total, criterion) =>
+                    total + ((targetOption.scores[criterion.id] ?? 0) * criterion.weight) / 100,
+                  0
+                ) * 10
+              ) / 10,
+              why: [
+                `Formally committed as final decision choice following human sign-off.`,
+                `${targetOption.name} was approved over competing options by human decision owner.`,
+                ...state.recommendation.why.filter((w) => !w.startsWith("Formally committed")),
+              ],
+            },
+          };
+        }
+      }
     }
+
+    const activityAction = parsed.data.resolution === "approved" ? "Proposal approved" : "Proposal rejected";
+    const activityDetail = parsed.data.resolution === "approved"
+      ? (isDecisionProposal
+          ? `Human approved final decision proposal: ${action.title}.`
+          : "Human approved the agent’s proposed priority change.")
+      : `Human rejected proposal: ${action.title}. The previous state remains active.`;
+
     next = recalculate({
       ...addActivity(
         next,
         "Human",
-        parsed.data.resolution === "approved" ? "Proposal approved" : "Proposal rejected",
-        parsed.data.resolution === "approved"
-          ? "Human approved the agent’s proposed priority change."
-          : "Human rejected the proposed priority change. The previous priorities remain active.",
+        activityAction,
+        activityDetail,
       ),
       pendingActions: next.pendingActions.map((item) =>
         item.id === action.id
@@ -510,6 +546,11 @@ router.post(
           : item,
       ),
     });
+
+    if (parsed.data.resolution === "approved" && isDecisionProposal) {
+      next.status = "Decided";
+    }
+
     await saveState(row.id, next);
     res.json(ResolvePendingActionResponse.parse(next));
   },

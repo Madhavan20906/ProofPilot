@@ -129,6 +129,7 @@ export interface PendingAction {
   proposedAt: string;
   currentWeights?: PendingActionCurrentWeights;
   proposedWeights?: PendingActionProposedWeights;
+  proposedOptionId?: string;
 }
 
 export interface DecisionState {

@@ -383,6 +383,8 @@ components:
         proposedWeights:
           type: object
           additionalProperties: { type: number }
+        proposedOptionId:
+          type: string
     WeightProposalInput:
       type: object
       required: [criterionId, proposedWeight, reason]

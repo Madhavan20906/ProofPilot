@@ -59,6 +59,7 @@ export type PendingAction = {
   proposedAt: string;
   currentWeights?: Record<string, number>;
   proposedWeights?: Record<string, number>;
+  proposedOptionId?: string;
 };
 
 export type ActivityEntry = {

@@ -49,32 +49,27 @@ const api = async (path: string, init?: RequestInit) => {
   }
 };
 
-// Ensure document.modelContext is always present so WebMCP tools register seamlessly
-if (typeof document !== "undefined" && !document.modelContext) {
-  const localRegistry = new Map<string, RegisteredTool>();
-  (document as any).modelContext = {
-    registerTool: (tool: RegisteredTool) => {
-      localRegistry.set(tool.name, tool);
-    },
-    getRegisteredTools: () => Array.from(localRegistry.values()),
-  };
-}
-
 let activeDecisionGetter: () => string = () => "demo-ai-assistant";
 let registered = false;
 
+function getWebMcpHost() {
+  if (typeof document === "undefined") return null;
+  return (document as any).modelContext || (navigator as any).modelContext || (window as any).modelContext || null;
+}
+
 export function registerProofPilotTools(getDecisionId: () => string) {
   activeDecisionGetter = getDecisionId;
-  if (typeof document === "undefined") {
+  const host = getWebMcpHost();
+  if (!host || typeof host.registerTool !== "function") {
     return false;
   }
   if (registered) return true;
 
   const statePath = () => `/api/decisions/${activeDecisionGetter()}`;
   const register = (tool: RegisteredTool) =>
-    document.modelContext?.registerTool({
+    host.registerTool({
       ...tool,
-      execute: async (input) => {
+      execute: async (input: any) => {
         try {
           const result = await tool.execute(input);
           window.dispatchEvent(
@@ -421,6 +416,11 @@ export function registerProofPilotTools(getDecisionId: () => string) {
   return true;
 }
 
-export function isWebMcpAvailable() {
-  return typeof document !== "undefined" && Boolean(document.modelContext);
+export function isWebMcpAvailable(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(
+    (document as any).modelContext ||
+      (navigator as any).modelContext ||
+      (window as any).modelContext
+  );
 }
