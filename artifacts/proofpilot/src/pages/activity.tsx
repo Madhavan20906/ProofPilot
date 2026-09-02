@@ -11,6 +11,8 @@ import { demoActivity, demoDecision, DEMO_ID, formatDate, formatRelative } from 
 import { ProofPilotShell, SectionEyebrow } from '@/components/proofpilot-shell';
 import { cn } from '@/lib/utils';
 
+import { getLocalActivities, getLocalDecisions } from '@/lib/store';
+
 export default function ActivityPage() {
   const [, setLocation] = useLocation();
   const params = useParams<{ id?: string }>();
@@ -19,13 +21,15 @@ export default function ActivityPage() {
   const decisionList = useListDecisions({ query: { queryKey: getListDecisionsQueryKey(), staleTime: 30000 } });
 
   const rawList = decisionList.data;
-  const listItems: any[] = Array.isArray(rawList)
+  const apiItems: any[] = Array.isArray(rawList)
     ? rawList
     : Array.isArray((rawList as any)?.decisions)
     ? (rawList as any).decisions
     : Array.isArray((rawList as any)?.data)
     ? (rawList as any).data
     : [];
+
+  const listItems = apiItems.length ? apiItems : getLocalDecisions();
 
   const activeId =
     params.id ??
@@ -47,8 +51,8 @@ export default function ActivityPage() {
     if (activityQuery.data && Array.isArray(activityQuery.data) && activityQuery.data.length > 0) {
       return activityQuery.data;
     }
-    return demoActivity;
-  }, [activityQuery.data]);
+    return getLocalActivities(activeId);
+  }, [activityQuery.data, activeId]);
 
   const entries = useMemo(() => {
     if (filter === 'agent') {

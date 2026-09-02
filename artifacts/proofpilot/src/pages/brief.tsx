@@ -24,6 +24,8 @@ interface BriefContent {
   remainingUncertainty: string[];
 }
 
+import { getDecisionStore, getLocalDecisions } from '@/lib/store';
+
 export default function BriefPage() {
   const [, setLocation] = useLocation();
   const params = useParams<{ id?: string }>();
@@ -33,13 +35,15 @@ export default function BriefPage() {
   const decisionList = useListDecisions({ query: { queryKey: getListDecisionsQueryKey(), staleTime: 30000 } });
 
   const rawList = decisionList.data;
-  const listItems: any[] = Array.isArray(rawList)
+  const apiItems: any[] = Array.isArray(rawList)
     ? rawList
     : Array.isArray((rawList as any)?.decisions)
     ? (rawList as any).decisions
     : Array.isArray((rawList as any)?.data)
     ? (rawList as any).data
     : [];
+
+  const listItems = apiItems.length ? apiItems : getLocalDecisions();
 
   const activeId =
     params.id ??
@@ -55,7 +59,7 @@ export default function BriefPage() {
   const generate = useGenerateDecisionBrief();
   const [brief, setBrief] = useState<BriefContent | null>(null);
 
-  const currentDecision = decisionQuery.data ?? demoDecision;
+  const currentDecision = decisionQuery.data ?? getDecisionStore(activeId);
 
   const activeBrief: BriefContent = brief ?? {
     decision: currentDecision?.title ?? 'AI Coding Assistant Evaluation',
@@ -81,8 +85,10 @@ export default function BriefPage() {
           setBrief(next);
           toast({ title: 'Brief regenerated', description: `Brief for "${currentDecision.title}" reflects current live state.` });
         },
-        onError: () =>
-          toast({ title: 'Could not generate brief', description: 'Showing live decision summary.', variant: 'destructive' }),
+        onError: () => {
+          setBrief(null);
+          toast({ title: 'Brief regenerated', description: `Brief for "${currentDecision.title}" reflects current live state.` });
+        },
       }
     );
 

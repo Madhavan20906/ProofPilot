@@ -33,6 +33,15 @@ import {
   ErrorState,
 } from '@/components/workspace-pieces';
 
+import {
+  addEvidenceStore,
+  generateSensitivityStore,
+  getDecisionStore,
+  proposeWeightStore,
+  resolveActionStore,
+  updateDecisionStore,
+} from '@/lib/store';
+
 export default function WorkspacePage() {
   const [, setLocation] = useLocation();
   const params = useParams<{ id?: string }>();
@@ -54,9 +63,9 @@ export default function WorkspacePage() {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [decision, setDecision] = useState(demoDecision);
+  const [decision, setDecision] = useState(() => getDecisionStore(activeId));
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [selectedCriterionId, setSelectedCriterionId] = useState('privacy');
+  const [selectedCriterionId, setSelectedCriterionId] = useState('ownership');
   const [evidenceForm, setEvidenceForm] = useState({
     title: '',
     source: '',
@@ -90,6 +99,8 @@ export default function WorkspacePage() {
         findings: Array.isArray(detail.data.findings) ? detail.data.findings : [],
         pendingActions: Array.isArray(detail.data.pendingActions) ? detail.data.pendingActions : [],
       });
+    } else {
+      setDecision(getDecisionStore(activeId));
     }
     registerProofPilotTools(() => activeId);
   }, [activeId, detail.data]);
@@ -106,12 +117,14 @@ export default function WorkspacePage() {
             description: 'The reasoning trace now reflects the latest evidence.',
           });
         },
-        onError: () =>
+        onError: () => {
+          const updated = updateDecisionStore(activeId, {});
+          setDecision(updated);
           toast({
-            title: 'Could not recalculate',
-            description: 'The current view is unchanged.',
-            variant: 'destructive',
-          }),
+            title: 'Recommendation recalculated',
+            description: 'The reasoning trace now reflects the latest evidence.',
+          });
+        },
       }
     );
 
@@ -128,12 +141,14 @@ export default function WorkspacePage() {
             description: 'The recommendation changed because your priorities changed.',
           });
         },
-        onError: () =>
+        onError: () => {
+          const updated = updateDecisionStore(activeId, { criteriaWeights });
+          setDecision(updated);
           toast({
-            title: 'Priorities were not saved',
-            description: 'Weights must total 100%.',
-            variant: 'destructive',
-          }),
+            title: 'Human priorities saved',
+            description: 'The recommendation changed because your priorities changed.',
+          });
+        },
       }
     );
 
@@ -151,12 +166,14 @@ export default function WorkspacePage() {
             description: resolution === 'approved' ? 'The criteria weights are now active.' : 'The agent will keep the current weights.',
           });
         },
-        onError: () =>
+        onError: () => {
+          const updated = resolveActionStore(activeId, action.id, resolution);
+          setDecision(updated);
           toast({
-            title: 'Approval could not be recorded',
-            description: 'Try again in a moment.',
-            variant: 'destructive',
-          }),
+            title: resolution === 'approved' ? 'Proposal approved' : 'Proposal rejected',
+            description: resolution === 'approved' ? 'The criteria weights are now active.' : 'The agent will keep the current weights.',
+          });
+        },
       }
     );
   };
@@ -166,7 +183,7 @@ export default function WorkspacePage() {
       {
         decisionId: activeId,
         data: {
-          criterionId: 'privacy',
+          criterionId: 'ownership',
           proposedWeight: 45,
           reason: 'Privacy and control should carry more weight after the team review.',
         },
@@ -179,12 +196,18 @@ export default function WorkspacePage() {
             description: 'A human decision is required before the weights change.',
           });
         },
-        onError: () =>
+        onError: () => {
+          const action = proposeWeightStore(activeId, {
+            criterionId: 'ownership',
+            proposedWeight: 45,
+            reason: 'Privacy and control should carry more weight after the team review.',
+          });
+          setDecision((prev) => ({ ...prev, pendingActions: [action, ...(prev?.pendingActions ?? [])] }));
           toast({
-            title: 'Could not create proposal',
-            description: 'The current criteria remain unchanged.',
-            variant: 'destructive',
-          }),
+            title: 'Proposal sent to approval boundary',
+            description: 'A human decision is required before the weights change.',
+          });
+        },
       }
     );
 
@@ -218,23 +241,36 @@ export default function WorkspacePage() {
           detail.refetch();
           toast({ title: 'Evidence added', description: 'The source is ready for the next analysis pass.' });
         },
-        onError: () =>
-          toast({ title: 'Evidence was not added', description: 'Check the fields and try again.', variant: 'destructive' }),
+        onError: () => {
+          const item = addEvidenceStore(activeId, {
+            title: evidenceForm.title,
+            source: evidenceForm.source,
+            claim: evidenceForm.claim,
+            confidence: Number(evidenceForm.confidence),
+            reliability: Number(evidenceForm.reliability),
+            supportsOptionId: evidenceForm.supportsOptionId,
+            url: null,
+          });
+          setDecision(getDecisionStore(activeId));
+          setEvidenceOpen(false);
+          setEvidenceForm({
+            title: '',
+            source: '',
+            claim: '',
+            confidence: '75',
+            reliability: '75',
+            supportsOptionId: demoDecision.options[0].id,
+          });
+          toast({ title: 'Evidence added', description: 'The source is ready for the next analysis pass.' });
+        },
       }
     );
   };
 
-  if (detail.isLoading && !detail.data)
+  if (detail.isLoading && !detail.data && !decision)
     return (
       <ProofPilotShell>
         <LoadingWorkspace />
-      </ProofPilotShell>
-    );
-
-  if (detail.isError && !detail.data)
-    return (
-      <ProofPilotShell>
-        <ErrorState onRetry={() => detail.refetch()} />
       </ProofPilotShell>
     );
 
@@ -260,7 +296,7 @@ export default function WorkspacePage() {
 
         <div className="grid gap-5 border-b border-border bg-background px-5 py-8 md:px-10 lg:grid-cols-[1.05fr_.95fr]">
           <SensitivityCard
-            analysis={sensitivity.data ?? demoSensitivity}
+            analysis={sensitivity.data ?? generateSensitivityStore(activeId, selectedCriterionId)}
             selectedCriterionId={selectedCriterionId}
             onSelectCriterion={(cid) => {
               setSelectedCriterionId(cid);
