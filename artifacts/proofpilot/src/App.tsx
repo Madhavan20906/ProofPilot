@@ -1,8 +1,9 @@
-import { type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { registerProofPilotTools } from '@/lib/webmcp';
 import NotFound from '@/pages/not-found';
 import LandingPage from '@/pages/landing';
 import WorkspacePage from '@/pages/workspace';
@@ -46,6 +47,10 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 }
 
 function App() {
+  useEffect(() => {
+    registerProofPilotTools(() => 'demo-ai-assistant');
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -59,3 +64,4 @@ function App() {
 }
 
 export default App;
+

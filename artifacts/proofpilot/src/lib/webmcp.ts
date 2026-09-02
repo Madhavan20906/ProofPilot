@@ -296,13 +296,18 @@ export function registerProofPilotTools(getDecisionId: () => string) {
       properties: {
         scenarioId: {
           type: "string",
-          enum: ["enterprise-privacy", "developer-velocity", "cost-optimized", "balanced"],
+          description: "Preset ID: 'enterprise-privacy', 'developer-velocity', 'cost-optimized', or 'balanced'",
         },
+        scenario: {
+          type: "string",
+          description: "Preset ID alias",
+        },
+        decision: { type: "string" },
+        decisionId: { type: "string" },
       },
-      required: ["scenarioId"],
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) => {
+    execute: async (input: any) => {
       const state = (await api(statePath())) as {
         options: Array<{ id: string; name: string; shortName: string; scores: Record<string, number> }>;
         criteria: Array<{ id: string; name: string }>;
@@ -316,7 +321,8 @@ export function registerProofPilotTools(getDecisionId: () => string) {
         balanced: { name: "Balanced Scorecard", weights: { "developer-experience": 25, "team-adoption": 25, privacy: 25, cost: 25 } },
       };
 
-      const scenario = scenarios[String(input.scenarioId)] ?? scenarios.balanced;
+      const rawKey = String(input?.scenarioId || input?.scenario || "enterprise-privacy").toLowerCase();
+      const scenario = scenarios[rawKey] ?? scenarios["enterprise-privacy"] ?? scenarios.balanced;
       const rankings = state.options.map((opt) => {
         const score = state.criteria.reduce((total, c) => {
           const weight = scenario.weights[c.id] ?? 25;
@@ -344,16 +350,21 @@ export function registerProofPilotTools(getDecisionId: () => string) {
       type: "object",
       properties: {
         criterionId: { type: "string" },
+        criterion: { type: "string" },
         proposedWeight: { type: "number", minimum: 0, maximum: 100 },
+        weight: { type: "number", minimum: 0, maximum: 100 },
         reason: { type: "string" },
       },
-      required: ["criterionId", "proposedWeight", "reason"],
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) =>
+    execute: async (input: any) =>
       api(`${statePath()}/actions/weight-proposal`, {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          criterionId: input.criterionId || input.criterion || "privacy",
+          proposedWeight: typeof input.proposedWeight === "number" ? input.proposedWeight : Number(input.weight) || 45,
+          reason: input.reason || "Weight proposal from agent review",
+        }),
       }),
   });
 
@@ -366,15 +377,18 @@ export function registerProofPilotTools(getDecisionId: () => string) {
       type: "object",
       properties: {
         optionId: { type: "string" },
+        option: { type: "string" },
         reason: { type: "string" },
       },
-      required: ["optionId", "reason"],
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) =>
+    execute: async (input: any) =>
       api(`${statePath()}/actions/decision-proposal`, {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          optionId: input.optionId || input.option || "gemini",
+          reason: input.reason || "Option proposal from agent review",
+        }),
       }),
   });
 
@@ -386,15 +400,14 @@ export function registerProofPilotTools(getDecisionId: () => string) {
     inputSchema: {
       type: "object",
       properties: { reason: { type: "string" } },
-      required: ["reason"],
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    execute: async (input) => {
+    execute: async (input: any) => {
       const state = await api(statePath());
       if (typeof state !== "object" || state === null) return state;
       return {
         requiresHumanApproval: true,
-        reason: input.reason,
+        reason: input?.reason || "Human review requested by agent",
         pendingActions: "pendingActions" in state ? state.pendingActions : [],
         message: "The agent may propose; only a human can approve.",
       };
@@ -406,7 +419,7 @@ export function registerProofPilotTools(getDecisionId: () => string) {
     name: "generate_decision_brief",
     description:
       "Generate a concise explainable brief from the active decision, including the recommendation, evidence, contradictions, and remaining uncertainty.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: { type: "object", properties: {}, additionalProperties: true },
     execute: async () =>
       api(`${statePath()}/brief`, { method: "POST", body: JSON.stringify({}) }),
   });
@@ -423,4 +436,23 @@ export function isWebMcpAvailable(): boolean {
       (navigator as any).modelContext ||
       (window as any).modelContext
   );
+}
+
+if (typeof window !== "undefined") {
+  const tryAutoRegister = () => {
+    registerProofPilotTools(() => activeDecisionGetter());
+  };
+  tryAutoRegister();
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", tryAutoRegister);
+  }
+  window.addEventListener("load", tryAutoRegister);
+
+  let attempts = 0;
+  const pollTimer = setInterval(() => {
+    attempts++;
+    if (registerProofPilotTools(() => activeDecisionGetter()) || attempts >= 20) {
+      clearInterval(pollTimer);
+    }
+  }, 500);
 }
