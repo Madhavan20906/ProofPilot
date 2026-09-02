@@ -64,8 +64,8 @@ export function ProofPilotShell({ children, decisionTitle = 'AI coding assistant
           </div>
           <button type="button" data-testid="button-help" onClick={() => window.alert('ProofPilot keeps the reasoning trace visible. Start with a decision, then review evidence and approval boundaries.')} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[11px] text-sidebar-foreground/48 transition hover:bg-sidebar-accent hover:text-sidebar-foreground"><CircleHelp size={15} /> Help & principles</button>
           <div className="mt-2 flex items-center gap-3 rounded-lg px-3 py-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#d9a441] font-display text-[11px] font-bold text-[#202b3f]">MC</div>
-            <div className="min-w-0 flex-1"><div className="truncate text-[11px] font-semibold">Maya Chen</div><div className="font-mono text-[9px] text-sidebar-foreground/40">Engineering</div></div>
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#d9a441] font-display text-[11px] font-bold text-[#202b3f]">M</div>
+            <div className="min-w-0 flex-1"><div className="truncate text-[11px] font-semibold">Madhavan</div><div className="font-mono text-[9px] text-sidebar-foreground/40">Engineering</div></div>
             <ChevronDown size={14} className="text-sidebar-foreground/35" />
           </div>
         </div>

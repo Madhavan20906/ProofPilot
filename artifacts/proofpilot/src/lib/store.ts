@@ -2,8 +2,8 @@ import type {
   ActivityEntry,
   DecisionState,
   DecisionSummary,
-  EvidenceItem,
-  FindingItem,
+  Evidence,
+  Finding,
   PendingAction,
   SensitivityAnalysis,
 } from '@workspace/api-client-react';
@@ -148,7 +148,7 @@ export function createDecisionStore(data: { title: string; description: string; 
     id: newId,
     title: data.title,
     description: data.description,
-    owner: data.owner || 'Maya Chen',
+    owner: data.owner || 'Madhavan',
     status: 'in_review',
     updatedAt: new Date().toISOString(),
     options: [...demoDecision.options],
@@ -171,7 +171,7 @@ export function createDecisionStore(data: { title: string; description: string; 
   const updated = [newDecision, ...items];
   saveLocalDecisions(updated);
   addLocalActivity(newId, {
-    actor: data.owner || 'Maya Chen',
+    actor: data.owner || 'Madhavan',
     action: 'Opened workspace',
     detail: `Created new decision workspace for "${data.title}"`,
   });
@@ -214,7 +214,7 @@ export function updateDecisionStore(id: string, patch: Partial<DecisionState> & 
 
   if (patch.criteriaWeights) {
     addLocalActivity(id, {
-      actor: 'Maya Chen',
+      actor: 'Madhavan',
       action: 'Updated criteria priorities',
       detail: `Adjusted weights. New top recommendation: ${newRec.optionName} (${newRec.score})`,
     });
@@ -223,12 +223,33 @@ export function updateDecisionStore(id: string, patch: Partial<DecisionState> & 
   return updatedDecision;
 }
 
-export function addEvidenceStore(id: string, evidenceData: Omit<EvidenceItem, 'id' | 'addedBy' | 'status'>): EvidenceItem {
+export function addEvidenceStore(
+  id: string,
+  evidenceData: {
+    title: string;
+    source: string;
+    claim: string;
+    confidence?: number;
+    reliability?: number;
+    supportsOptionId?: string | null;
+    sourceType?: string;
+    url?: string | null;
+  }
+): Evidence {
   const decision = getDecisionStore(id);
-  const newEv: EvidenceItem = {
-    ...evidenceData,
+  const newEv: Evidence = {
+    title: evidenceData.title,
+    source: evidenceData.source,
+    claim: evidenceData.claim,
+    summary: evidenceData.claim,
+    sourceType: evidenceData.sourceType ?? 'internal research',
+    supportsOptionId: evidenceData.supportsOptionId ?? null,
+    contradictsOptionId: null,
+    confidence: evidenceData.confidence ?? 75,
+    reliability: evidenceData.reliability ?? 75,
+    url: evidenceData.url ?? null,
     id: `ev-${Date.now()}`,
-    addedBy: 'Maya Chen',
+    addedBy: 'Madhavan',
     status: 'verified',
   };
 
@@ -249,7 +270,7 @@ export function addEvidenceStore(id: string, evidenceData: Omit<EvidenceItem, 'i
   saveLocalDecisions(items);
 
   addLocalActivity(id, {
-    actor: 'Maya Chen',
+    actor: 'Madhavan',
     action: 'Added evidence',
     detail: `${newEv.title} · ${newEv.source}`,
   });
@@ -315,9 +336,10 @@ export function resolveActionStore(id: string, actionId: string, resolution: 'ap
 
   let updatedCriteria = decision.criteria;
   if (resolution === 'approved' && action?.proposedWeights) {
+    const proposedWeights = action.proposedWeights;
     updatedCriteria = decision.criteria.map((c) => ({
       ...c,
-      weight: action.proposedWeights[c.id] ?? c.weight,
+      weight: proposedWeights[c.id] ?? c.weight,
     }));
   }
 
@@ -338,7 +360,7 @@ export function resolveActionStore(id: string, actionId: string, resolution: 'ap
   saveLocalDecisions(items);
 
   addLocalActivity(id, {
-    actor: 'Maya Chen',
+    actor: 'Madhavan',
     action: resolution === 'approved' ? 'Approved proposal' : 'Rejected proposal',
     detail: action?.title ?? 'Weight change proposal',
   });

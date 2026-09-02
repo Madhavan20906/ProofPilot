@@ -17,7 +17,7 @@ export default function DecisionsPage() {
   const update = useUpdateDecision();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [form, setForm] = useState({ title: '', description: '', owner: 'Maya Chen' });
+  const [form, setForm] = useState({ title: '', description: '', owner: 'Madhavan' });
   const [localItems, setLocalItems] = useState(listDecisionSummariesStore());
 
   useEffect(() => {

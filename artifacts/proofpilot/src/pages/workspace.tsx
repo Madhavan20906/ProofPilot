@@ -246,6 +246,7 @@ export default function WorkspacePage() {
             title: evidenceForm.title,
             source: evidenceForm.source,
             claim: evidenceForm.claim,
+            sourceType: 'user research',
             confidence: Number(evidenceForm.confidence),
             reliability: Number(evidenceForm.reliability),
             supportsOptionId: evidenceForm.supportsOptionId,
