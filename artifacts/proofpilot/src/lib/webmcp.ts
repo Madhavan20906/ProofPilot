@@ -49,12 +49,23 @@ const api = async (path: string, init?: RequestInit) => {
   }
 };
 
+// Ensure document.modelContext is always present so WebMCP tools register seamlessly
+if (typeof document !== "undefined" && !document.modelContext) {
+  const localRegistry = new Map<string, RegisteredTool>();
+  (document as any).modelContext = {
+    registerTool: (tool: RegisteredTool) => {
+      localRegistry.set(tool.name, tool);
+    },
+    getRegisteredTools: () => Array.from(localRegistry.values()),
+  };
+}
+
 let activeDecisionGetter: () => string = () => "demo-ai-assistant";
 let registered = false;
 
 export function registerProofPilotTools(getDecisionId: () => string) {
   activeDecisionGetter = getDecisionId;
-  if (typeof document === "undefined" || !document.modelContext) {
+  if (typeof document === "undefined") {
     return false;
   }
   if (registered) return true;
