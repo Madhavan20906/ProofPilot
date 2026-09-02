@@ -28,10 +28,32 @@ const registeredToolsMap = new Map<string, RegisteredTool>();
 let activeDecisionGetter: () => string = () => "demo-ai-assistant";
 
 /**
- * Update declarative script tags in HTML head so site-tool scanners
- * (e.g. ChatGPT in-app browser static parser, extensions) discover tools.
+ * Fallback polyfill object for environments without native WebMCP host.
  */
-function updateDeclarativeScriptTags() {
+const polyfillModelContext = {
+  registerTool(tool: RegisteredTool) {
+    registeredToolsMap.set(tool.name, tool);
+    updateDeclarativeDOM();
+  },
+  unregisterTool(name: string) {
+    registeredToolsMap.delete(name);
+    updateDeclarativeDOM();
+  },
+  getTools() {
+    return Array.from(registeredToolsMap.values());
+  },
+  listTools() {
+    return Array.from(registeredToolsMap.values());
+  },
+  get tools() {
+    return Array.from(registeredToolsMap.values());
+  },
+};
+
+/**
+ * Update declarative DOM elements (JSON-LD script tags + declarative hidden forms)
+ */
+function updateDeclarativeDOM() {
   if (typeof document === "undefined") return;
   try {
     const toolArray = Array.from(registeredToolsMap.values()).map((t) => ({
@@ -40,6 +62,7 @@ function updateDeclarativeScriptTags() {
       inputSchema: t.inputSchema,
     }));
 
+    // 1. JSON-LD script tag
     let scriptEl = document.getElementById("proofpilot-webmcp-tools") as HTMLScriptElement;
     if (!scriptEl) {
       scriptEl = document.createElement("script");
@@ -64,18 +87,36 @@ function updateDeclarativeScriptTags() {
       document.head.appendChild(fallbackEl);
     }
     fallbackEl.textContent = JSON.stringify(toolArray, null, 2);
+
+    // 2. Declarative hidden forms container
+    let formsContainer = document.getElementById("proofpilot-webmcp-forms");
+    if (!formsContainer) {
+      formsContainer = document.createElement("div");
+      formsContainer.id = "proofpilot-webmcp-forms";
+      formsContainer.style.display = "none";
+      document.body?.appendChild(formsContainer);
+    }
+
+    if (formsContainer) {
+      formsContainer.innerHTML = toolArray
+        .map(
+          (t) =>
+            `<form toolname="${t.name}" tooldescription="${t.description.replace(/"/g, "&quot;")}" data-webmcp="true"></form>`
+        )
+        .join("\n");
+    }
   } catch {
-    // Ignore DOM update errors
+    // Ignore DOM errors
   }
 }
 
 /**
- * Sync a registered tool across all available host targets:
- * document.modelContext, navigator.modelContext, window.modelContext, window.webMCP
+ * Safe registration function that calls document.modelContext.registerTool
+ * directly on native hosts without replacing native host objects.
  */
-function syncToolToHosts(tool: RegisteredTool) {
+function registerToolWithHosts(tool: RegisteredTool) {
   registeredToolsMap.set(tool.name, tool);
-  updateDeclarativeScriptTags();
+  updateDeclarativeDOM();
 
   const hostsToSync: any[] = [];
   if (typeof document !== "undefined" && (document as any).modelContext) {
@@ -90,17 +131,20 @@ function syncToolToHosts(tool: RegisteredTool) {
   }
 
   hostsToSync.forEach((host) => {
-    try {
-      if (host && typeof host.registerTool === "function" && host !== universalModelContext) {
-        host.registerTool({
+    if (host && typeof host.registerTool === "function" && host !== polyfillModelContext) {
+      try {
+        const res = host.registerTool({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
           execute: tool.execute,
         });
+        if (res && typeof res.catch === "function") {
+          res.catch(() => {});
+        }
+      } catch (err) {
+        // Ignore individual host registration errors
       }
-    } catch {
-      // Ignore sync errors for host proxies
     }
   });
 
@@ -112,71 +156,34 @@ function syncToolToHosts(tool: RegisteredTool) {
 }
 
 /**
- * Universal modelContext object API
+ * Ensures polyfill exists ONLY if no native host object is detected.
  */
-const universalModelContext = {
-  registerTool(tool: RegisteredTool) {
-    syncToolToHosts(tool);
-  },
-  unregisterTool(name: string) {
-    registeredToolsMap.delete(name);
-    updateDeclarativeScriptTags();
-  },
-  getTools() {
-    return Array.from(registeredToolsMap.values());
-  },
-  listTools() {
-    return Array.from(registeredToolsMap.values());
-  },
-  get tools() {
-    return Array.from(registeredToolsMap.values());
-  },
-};
+function ensurePolyfillIfNoNative() {
+  if (typeof document === "undefined") return;
 
-/**
- * Ensure modelContext exists on window, navigator, document, and window.webMCP
- */
-function initUniversalPolyfill() {
-  if (typeof window === "undefined") return;
+  const hasNative = Boolean(
+    ((document as any).modelContext && (document as any).modelContext !== polyfillModelContext) ||
+      ((navigator as any).modelContext && (navigator as any).modelContext !== polyfillModelContext) ||
+      ((window as any).modelContext && (window as any).modelContext !== polyfillModelContext)
+  );
 
-  try {
-    if (!(window as any).modelContext) {
-      (window as any).modelContext = universalModelContext;
+  if (!hasNative) {
+    if (!(document as any).modelContext) {
+      (document as any).modelContext = polyfillModelContext;
     }
-    if (!(window as any).webMCP) {
-      (window as any).webMCP = universalModelContext;
-    }
-    (window as any).__WEBMCP_TOOLS__ = Array.from(registeredToolsMap.values());
-
     if (typeof navigator !== "undefined" && !(navigator as any).modelContext) {
-      try {
-        Object.defineProperty(navigator, "modelContext", {
-          value: universalModelContext,
-          writable: true,
-          configurable: true,
-        });
-      } catch {
-        (navigator as any).modelContext = universalModelContext;
-      }
+      (navigator as any).modelContext = polyfillModelContext;
     }
-
-    if (typeof document !== "undefined" && !(document as any).modelContext) {
-      try {
-        Object.defineProperty(document, "modelContext", {
-          value: universalModelContext,
-          writable: true,
-          configurable: true,
-        });
-      } catch {
-        (document as any).modelContext = universalModelContext;
-      }
+    if (typeof window !== "undefined" && !(window as any).modelContext) {
+      (window as any).modelContext = polyfillModelContext;
     }
-  } catch {
-    // Ignore polyfill assignment errors
+    if (typeof window !== "undefined" && !(window as any).webMCP) {
+      (window as any).webMCP = polyfillModelContext;
+    }
   }
 }
 
-initUniversalPolyfill();
+ensurePolyfillIfNoNative();
 
 const api = async (path: string, init?: RequestInit) => {
   try {
@@ -204,7 +211,7 @@ const getActiveState = async (decisionId?: string) => {
   return getDecisionStore(targetId) || demoDecision;
 };
 
-const wrapExecute = (name: string, fn: (input: any) => Promise<unknown>) => {
+const wrapExecute = (name: string, fn: (input: any) => Promise<any>) => {
   return async (input: any) => {
     try {
       const result = await fn(input);
@@ -238,7 +245,16 @@ const wrapExecute = (name: string, fn: (input: any) => Promise<unknown>) => {
           })
         );
       }
-      return { ok: false, error: error instanceof Error ? error.message : "Tool execution failed safely." };
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Tool execution failed safely.",
+        content: [
+          {
+            type: "text",
+            text: `Tool execution error: ${error instanceof Error ? error.message : "Safe execution failure"}`,
+          },
+        ],
+      };
     }
   };
 };
@@ -246,14 +262,15 @@ const wrapExecute = (name: string, fn: (input: any) => Promise<unknown>) => {
 let allToolsInitialized = false;
 
 function registerAllToolsOnce() {
+  ensurePolyfillIfNoNative();
+
   if (allToolsInitialized) {
-    // Re-sync existing tools to any newly attached host
-    registeredToolsMap.forEach((tool) => syncToolToHosts(tool));
+    registeredToolsMap.forEach((tool) => registerToolWithHosts(tool));
     return;
   }
 
   // 1. Discovery Tool: get_decision_state
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "get_decision_state",
     description:
       "Retrieve the current decision, options, criteria, evidence coverage, findings, pending approvals, and recommendation from the active ProofPilot workspace.",
@@ -267,12 +284,21 @@ function registerAllToolsOnce() {
     },
     execute: wrapExecute("get_decision_state", async (input) => {
       const id = input?.decisionId || input?.decision || activeDecisionGetter();
-      return getActiveState(id);
+      const state = await getActiveState(id);
+      return {
+        ...state,
+        content: [
+          {
+            type: "text",
+            text: `Active decision '${state.title}' (${state.id}). Status: ${state.status}. Top recommendation: ${state.recommendation?.optionName || 'Pending'} (${state.recommendation?.score || 0} pts).`,
+          },
+        ],
+      };
     }),
   });
 
   // 2. Discovery Tool: get_evidence
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "get_evidence",
     description:
       "Inspect the source-backed evidence used by the active decision, including confidence, reliability, support, contradiction, and approval status.",
@@ -286,12 +312,17 @@ function registerAllToolsOnce() {
     },
     execute: wrapExecute("get_evidence", async (input) => {
       const state = await getActiveState(input?.decisionId || input?.decision);
-      return { evidence: state.evidence || [] };
+      const evidence = state.evidence || [];
+      return {
+        evidence,
+        count: evidence.length,
+        content: [{ type: "text", text: `Found ${evidence.length} evidence sources for decision '${state.id}'.` }],
+      };
     }),
   });
 
   // 3. Discovery Tool: search_evidence
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "search_evidence",
     description:
       "Search decision evidence by query text, targeted option ID, or minimum confidence/reliability threshold.",
@@ -320,12 +351,16 @@ function registerAllToolsOnce() {
         const matchesRel = (Number(item.reliability) || 0) >= minRel;
         return matchesQuery && matchesOpt && matchesRel;
       });
-      return { count: filtered.length, evidence: filtered };
+      return {
+        count: filtered.length,
+        evidence: filtered,
+        content: [{ type: "text", text: `Search matching '${q}': ${filtered.length} evidence items found.` }],
+      };
     }),
   });
 
   // 4. Evidence Generation Tool: add_evidence
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "add_evidence",
     description:
       "Submit new source-backed evidence into the active decision. ProofPilot automatically recalculates decision confidence and dynamic findings.",
@@ -356,12 +391,17 @@ function registerAllToolsOnce() {
         supportsOptionId: input?.supportsOptionId ? String(input.supportsOptionId) : null,
         url: input?.url ? String(input.url) : null,
       });
-      return { ok: true, item, message: "Evidence added successfully." };
+      return {
+        ok: true,
+        item,
+        message: "Evidence added successfully.",
+        content: [{ type: "text", text: `Evidence '${item.title}' added to decision '${targetId}'.` }],
+      };
     }),
   });
 
   // 5. Analysis Tool: compare_options
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "compare_options",
     description:
       "Return a weighted comparison of every option in the active decision, showing criterion scores, weighted totals, and the current leader.",
@@ -395,12 +435,18 @@ function registerAllToolsOnce() {
         criteria,
         options,
         currentLeader: options[0]?.name || state.recommendation?.optionName || "None",
+        content: [
+          {
+            type: "text",
+            text: `Option comparison: ${options.map((o: any) => `${o.name}: ${o.weightedScore}`).join(", ")}. Leader: ${options[0]?.name}.`,
+          },
+        ],
       };
     }),
   });
 
   // 6. Analysis Tool: detect_contradictions
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "detect_contradictions",
     description:
       "Dynamically evaluate evidence content across options to surface conflicting claims, unverified sources, and information gaps.",
@@ -413,12 +459,16 @@ function registerAllToolsOnce() {
     },
     execute: wrapExecute("detect_contradictions", async (input) => {
       const state = await getActiveState(input?.decisionId || input?.decision);
-      return { findings: state.findings || [] };
+      const findings = state.findings || [];
+      return {
+        findings,
+        content: [{ type: "text", text: `Found ${findings.length} findings/contradictions for decision '${state.id}'.` }],
+      };
     }),
   });
 
   // 7. Analysis Tool: run_sensitivity_analysis
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "run_sensitivity_analysis",
     description:
       "Test recommendation stability across changing priorities for any criterion (e.g. privacy, cost, developer-experience, team-adoption).",
@@ -472,12 +522,18 @@ function registerAllToolsOnce() {
         stable: false,
         summary: `${state.recommendation?.optionName || 'Top option'} is sensitive to changes in ${critName}.`,
         points,
+        content: [
+          {
+            type: "text",
+            text: `Sensitivity analysis for '${critName}': ${points.map((p: any) => `Weight ${p.weight}% -> Winner ${p.winner}`).join("; ")}.`,
+          },
+        ],
       };
     }),
   });
 
   // 8. Risk Analysis Tool: analyze_decision_risk
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "analyze_decision_risk",
     description:
       "Assess overall risk exposure, identifying options with low evidence reliability, open contradictions, or high sensitivity to priority shifts.",
@@ -497,8 +553,10 @@ function registerAllToolsOnce() {
       const gaps = findings.filter((f: any) => f.kind === "gap" || f.severity === "warning");
       const lowReliabilitySources = evidence.filter((e: any) => (Number(e.reliability) || 0) < 60);
 
+      const riskLevel = contradictions.length > 0 || gaps.length > 1 ? "Elevated" : "Low";
+
       return {
-        overallRiskLevel: contradictions.length > 0 || gaps.length > 1 ? "Elevated" : "Low",
+        overallRiskLevel: riskLevel,
         openContradictions: contradictions.length,
         unresolvedGaps: gaps.length,
         unverifiedSourcesCount: lowReliabilitySources.length,
@@ -506,12 +564,18 @@ function registerAllToolsOnce() {
           ...contradictions.map((c: any) => ({ type: "Contradiction", title: c.title, severity: c.severity })),
           ...gaps.map((g: any) => ({ type: "Information Gap", title: g.title, severity: g.severity })),
         ],
+        content: [
+          {
+            type: "text",
+            text: `Risk Analysis: Overall risk level is ${riskLevel}. ${contradictions.length} open contradictions, ${gaps.length} unresolved gaps.`,
+          },
+        ],
       };
     }),
   });
 
   // 9. Scenario Evaluation Tool: evaluate_scenario
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "evaluate_scenario",
     description:
       "Evaluate option rankings under a named scenario preset ('enterprise-privacy', 'developer-velocity', 'cost-optimized', 'balanced').",
@@ -559,20 +623,29 @@ function registerAllToolsOnce() {
 
       rankings.sort((a: any, b: any) => b.score - a.score);
 
+      const leader = rankings[0]?.name || "None";
+      const winningScore = rankings[0]?.score || 0;
+
       return {
         scenarioId: scenarioKey,
         scenarioName: scenario.name,
         decisionId: targetId,
-        leader: rankings[0]?.name || "None",
-        winningScore: rankings[0]?.score || 0,
+        leader,
+        winningScore,
         rankings,
-        summary: `Under '${scenario.name}', ${rankings[0]?.name || 'Top Option'} ranks #1 with a score of ${rankings[0]?.score || 0}.`,
+        summary: `Under '${scenario.name}', ${leader} ranks #1 with a score of ${winningScore}.`,
+        content: [
+          {
+            type: "text",
+            text: `Scenario Evaluation Result: '${scenario.name}' for decision '${targetId}'. Leader: ${leader} (${winningScore} pts). Rankings: ${rankings.map((r: any) => `${r.name}: ${r.score}`).join(", ")}.`,
+          },
+        ],
       };
     }),
   });
 
   // 10. Governance Tool: propose_weight_change
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "propose_weight_change",
     description:
       "Prepare a consequential criterion-weight change for human review. This tool never applies the change immediately.",
@@ -593,12 +666,22 @@ function registerAllToolsOnce() {
         proposedWeight: typeof input?.proposedWeight === "number" ? input.proposedWeight : 45,
         reason: String(input?.reason || "Proposed weight adjustment from agent review."),
       });
-      return { ok: true, action, message: "Proposal submitted to approval boundary for human review." };
+      return {
+        ok: true,
+        action,
+        message: "Proposal submitted to approval boundary for human review.",
+        content: [
+          {
+            type: "text",
+            text: `Proposed raising criterion '${action.title}' for decision '${targetId}'. Requires human approval.`,
+          },
+        ],
+      };
     }),
   });
 
   // 11. Governance Tool: propose_decision
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "propose_decision",
     description:
       "Propose selecting a final decision option for formal human sign-off.",
@@ -617,12 +700,22 @@ function registerAllToolsOnce() {
         optionId: String(input?.optionId || input?.option || "gemini"),
         reason: String(input?.reason || "Proposed decision selection from agent analysis."),
       });
-      return { ok: true, action, message: "Decision proposal created. Human sign-off required to finalize." };
+      return {
+        ok: true,
+        action,
+        message: "Decision proposal created. Human sign-off required to finalize.",
+        content: [
+          {
+            type: "text",
+            text: `Proposed final choice '${action.title}' for decision '${targetId}'. Awaiting human sign-off.`,
+          },
+        ],
+      };
     }),
   });
 
   // 12. Governance Tool: request_human_review
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "request_human_review",
     description:
       "Ask the human decision owner to review the latest consequential proposal before any governance change is applied.",
@@ -636,17 +729,24 @@ function registerAllToolsOnce() {
     execute: wrapExecute("request_human_review", async (input) => {
       const targetId = input?.decisionId || input?.decision || activeDecisionGetter();
       const state = await getActiveState(targetId);
+      const reasonText = String(input?.reason || "Human review requested by agent");
       return {
         requiresHumanApproval: true,
-        reason: String(input?.reason || "Human review requested by agent"),
+        reason: reasonText,
         pendingActions: state.pendingActions || [],
         message: "The agent may propose; only a human can approve.",
+        content: [
+          {
+            type: "text",
+            text: `Human review requested for decision '${targetId}'. Reason: ${reasonText}.`,
+          },
+        ],
       };
     }),
   });
 
   // 13. Output Tool: generate_decision_brief
-  syncToolToHosts({
+  registerToolWithHosts({
     name: "generate_decision_brief",
     description:
       "Generate a concise explainable brief from the active decision, including the recommendation, evidence, contradictions, and remaining uncertainty.",
@@ -667,6 +767,12 @@ function registerAllToolsOnce() {
         evidenceSummary: `${(state.evidence || []).length} verified sources in evidence room`,
         openContradictions: (state.findings || []).filter((f: any) => f.kind === "contradiction").length,
         pendingHumanActions: (state.pendingActions || []).filter((a: any) => a.status === "Pending").length,
+        content: [
+          {
+            type: "text",
+            text: `Decision Brief: '${state.title}'. Recommendation: ${state.recommendation?.optionName} (${state.recommendation?.score} pts). Status: ${state.status}.`,
+          },
+        ],
       };
     }),
   });
@@ -678,7 +784,6 @@ export function registerProofPilotTools(getDecisionId: () => string): boolean {
   if (typeof getDecisionId === "function") {
     activeDecisionGetter = getDecisionId;
   }
-  initUniversalPolyfill();
   registerAllToolsOnce();
   return true;
 }
@@ -687,10 +792,8 @@ export function isWebMcpAvailable(): boolean {
   return true;
 }
 
-// Global polling & event listeners to handle dynamic host injection in ChatGPT in-app browser & Chrome
 if (typeof window !== "undefined") {
   const syncLoop = () => {
-    initUniversalPolyfill();
     registerAllToolsOnce();
   };
 
@@ -703,6 +806,12 @@ if (typeof window !== "undefined") {
   window.addEventListener("focus", syncLoop);
   window.addEventListener("pageshow", syncLoop);
 
-  // Poll periodically to catch dynamic host attachment (e.g. ChatGPT in-app browser attaching after load)
-  setInterval(syncLoop, 1000);
+  let attempts = 0;
+  const pollTimer = setInterval(() => {
+    attempts++;
+    syncLoop();
+    if (attempts >= 40) {
+      clearInterval(pollTimer);
+    }
+  }, 250);
 }
