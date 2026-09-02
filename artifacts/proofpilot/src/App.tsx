@@ -30,6 +30,7 @@ function Router() {
          <Route path="/decisions" component={DecisionsPage} />
          <Route path="/decisions/:id" component={WorkspacePage} />
          <Route path="/activity" component={ActivityPage} />
+         <Route path="/activity/:id" component={ActivityPage} />
          <Route path="/brief" component={BriefPage} />
          <Route path="/brief/:id" component={BriefPage} />
          <Route path="/developer" component={DeveloperPage} />
