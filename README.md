@@ -2,138 +2,157 @@
 
 **Decisions you can interrogate.**
 
-ProofPilot is a human-agent decision intelligence workspace built for high-stakes choices where an answer alone is not enough. A human sets priorities, an agent investigates through WebMCP, evidence and uncertainty stay visible, and consequential changes stop for explicit human approval.
+ProofPilot is a human-agent decision workspace for choices that are too consequential to leave to a single model output. A human sets priorities. An agent investigates, scores, and proposes — live, through WebMCP tools registered directly on the page. Evidence and uncertainty stay visible the whole time. And anything that would actually change the outcome — a weight change, a final pick — stops at a human approval boundary before it takes effect.
+
+It is not another chat-with-your-data tool. It is what a decision looks like when an agent can act on the page but cannot decide unilaterally on your behalf.
 
 ---
 
-## 🚀 Judge & Evaluator Quickstart
+## The problem
 
-### 1. Run Automated Unit Tests
-Verify decision scoring, weight normalization, dynamic contradiction detection, and scenario evaluation:
+Enterprise teams making high-stakes calls — which vendor, which tool, which architecture — don't actually want an AI's opinion. They want the *reasoning* made inspectable: what evidence supports it, what it contradicts, how stable the recommendation is if priorities shift, and who signed off on the parts that mattered. Most "AI assistant" tooling collapses all of that into a single confident answer and hides the work. ProofPilot keeps the work visible and puts a human hand on the parts that carry consequence.
+
+## Why this needed WebMCP specifically
+
+Before WebMCP, giving an agent this kind of access meant one of two bad options: a custom backend API only your own chat client could call, or letting a browser-automation agent click around your UI and hope it doesn't fat-finger an approval. WebMCP lets ProofPilot expose its actual domain logic — read the decision state, search evidence, run a sensitivity sweep, propose a weight change — as typed tools any WebMCP-aware agent host can discover and call, on the same page a human is looking at, in the same session, under the same trust boundary. The agent and the human are working the same object at the same time, not through two disconnected surfaces.
+
+That's also why the tool catalog is split into tiers instead of being one flat list of 13 functions. **Discovery and Analysis tools execute freely** — an agent can read state, search evidence, run what-if scenarios, and detect contradictions without asking permission, because none of that changes anything. **Governance tools never execute directly** — `propose_weight_change` and `propose_decision` can only ever *prepare* a proposal; the actual mutation happens only after a human clicks Approve in the UI. This maps WebMCP's tool-calling model onto an actual authority boundary, not just a feature list.
+
+## What becomes possible that wasn't before
+
+- An agent can genuinely *investigate* a decision — pull evidence, cross-check claims, run sensitivity analysis across weight ranges — without a human relaying screenshots back and forth.
+- A human can see, in real time, exactly which tool the agent just called, with what input, and what it returned — because the Developer view surfaces live WebMCP call traces, not a black box.
+- Consequential change is structurally incapable of happening silently. A proposed weight change or final pick sits as a visible, rejectable card until a human resolves it — this is enforced in the tool's `requiresHumanApproval` execution path, not just implied by the UI.
+
+---
+
+## How it works
+
+1. **Set priorities.** Weight the criteria that matter (developer experience, privacy, cost, adoption) for your decision.
+2. **Ask the agent to investigate.** Through any WebMCP-aware host (ChatGPT's in-app browser, WebMCP-enabled Chrome), the agent calls `get_decision_state`, `get_evidence`, `search_evidence`, `detect_contradictions`, `run_sensitivity_analysis` — all read-only, all executing live.
+3. **Agent proposes, not decides.** If the agent thinks priorities should shift or a source needs adding, it calls a Governance tool, which produces a pending proposal — it cannot apply the change itself.
+4. **Human approves or rejects.** One click. The workspace recalculates in real time, and the resolution — who, what, when — is written to an append-only audit trail.
+5. **Generate the brief.** `generate_decision_brief` compiles the live state — options evaluated, key evidence, remaining uncertainty, who approved what — into an executive-ready summary.
+
+---
+
+## WebMCP Tool Catalog (13 tools, 4 tiers)
+
+| Tier | Tool | What it does |
+|---|---|---|
+| Discovery | `get_decision_state` | Reads active options, criteria weights, findings, current leader |
+| Discovery | `get_evidence` | Inspects source claims, confidence %, reliability %, verification status |
+| Discovery | `search_evidence` | Filters evidence by keyword or supported option |
+| Evidence | `add_evidence` | Submits a new source-backed claim and recalculates findings |
+| Analysis | `compare_options` | Deterministic weighted scoring across all options |
+| Analysis | `detect_contradictions` | Surfaces conflicting claims and evidence gaps |
+| Analysis | `run_sensitivity_analysis` | Tests recommendation stability across weight ranges |
+| Analysis | `analyze_decision_risk` | Computes risk level, unverified-source count, risk factors |
+| Analysis | `evaluate_scenario` | Ranks options under presets (Enterprise Privacy, Cost-Optimized, etc.) |
+| Governance | `propose_weight_change` | Prepares a weight change for human approval — **cannot self-apply** |
+| Governance | `propose_decision` | Proposes a final pick for human sign-off — **cannot self-apply** |
+| Governance | `request_human_review` | Explicitly pauses the workflow at the approval boundary |
+| Output | `generate_decision_brief` | Compiles live state into an explainable executive brief |
+
+Registered via the standard pattern on `document.modelContext` / `navigator.modelContext`:
+
+```ts
+document.modelContext.registerTool({
+  name: "propose_weight_change",
+  description: "Prepares a criteria weight change for human approval. Does not auto-apply.",
+  inputSchema: { /* ... */ },
+  execute: async (input) => { /* returns a pending proposal, never mutates state directly */ },
+});
+```
+
+See `artifacts/proofpilot/src/lib/webmcp.ts` for all 13 registrations.
+
+---
+
+## Architecture
+
+```
+ [ Human ] ──( priorities & approvals )──┐
+                                          ▼
+ [ WebMCP Host / Agent ] ──( 13 tools )──► [ ProofPilot Workspace ]
+                                                    │
+                                                    ▼
+                                          [ Express API Server ]
+                                                    │
+                                                    ▼
+                                          [ Decision Engine ]
+                                (weighted scoring · sensitivity sweeps
+                                 · contradiction detection · scenarios)
+                                                    │
+                                                    ▼
+                                            [ PostgreSQL ]
+```
+
+**Frontend:** React 18, Vite, Tailwind, Wouter, TanStack Query.
+**Backend:** Express, TypeScript, Zod, Vitest.
+**Engine:** Deterministic multi-criteria decision analysis — scores, confidence, and risk are computed by the scoring engine, not asserted by a model.
+
+---
+
+## Try it live
+
+**proofpilot-kappa.vercel.app** — no login required.
+
+Test the WebMCP integration through either:
+- **ChatGPT desktop app's in-app browser** (WebMCP-enabled by default), or
+- **Google Chrome 149+**, with `chrome://flags/#enable-webmcp-testing` set to Enabled, browser restarted.
+
+Open a decision, then ask your agent something like:
+- *"Inspect the active decision state and summarize the evidence."*
+- *"Detect contradictions and evidence gaps in this decision."*
+- *"Propose raising the Privacy & Control weight to 45%."* — watch it stop at the approval card instead of applying directly.
+
+The `/developer` route shows the live tool registry and call trace if you want to inspect the raw WebMCP protocol traffic as it happens.
+
+---
+
+## Running locally (for development, not required for testing)
+
+```bash
+git clone https://github.com/Madhavan20906/ProofPilot.git
+cd ProofPilot
+cp .env.example .env
+pnpm install
+
+# frontend
+pnpm --filter @workspace/proofpilot dev
+
+# api server (separate terminal)
+pnpm --filter @workspace/api-server dev
+```
+
+Run the test suite:
+
 ```bash
 pnpm test
 ```
 
-### 2. Run the Full Application Locally
-```bash
-pnpm install
-pnpm dev
-```
-Open [http://localhost:5000](http://localhost:5000) in your browser.
+> The deployed URL above is the reference environment — production runs frontend and API together as a single Vercel deployment (`api/index.ts`), which local dev does not replicate exactly.
 
 ---
 
-## 🛠️ Step-by-Step Guide: How to Test WebMCP Integration
+## Security & governance principles
 
-ProofPilot registers **13 native WebMCP tools** directly onto `window.navigator.modelContext` / `document.modelContext`.
-
-### Browser Prerequisite & Setup
-1. **Supported Browser**: Use Google Chrome (128+) or Microsoft Edge with WebMCP enabled.
-2. **Enable WebMCP Flag** (if testing native browser agent capability):
-   - Navigate to `chrome://flags`
-   - Search for `#enable-model-context-protocol` or WebMCP experimental features and set to **Enabled**.
-   - Alternatively, open the **Developer Page** (`/developer`) inside ProofPilot to inspect the live WebMCP registration status and tools catalog.
-
-### Exact Interactive Agent Test Workflow for Judges
-
-Follow this step-by-step sequence to test human-agent decision governance:
-
-1. **Step 1: Launch Workspace**
-   - Open `/decisions/demo-ai-assistant` or click **Launch Workspace Demo** from `/`.
-   - Observe initial leader: **GitHub Copilot** with an **82% evidence confidence**.
-
-2. **Step 2: Ask Agent to Discover Decision & Evidence State**
-   - **Agent Prompt**: *"Inspect the active decision state and summarize the evidence."*
-   - **WebMCP Tool Invoked**: `get_decision_state` and `get_evidence`
-   - **Result**: Returns options (Cursor, GitHub Copilot, Gemini Code Assist), criteria weights, and linked evidence items.
-
-3. **Step 3: Run Dynamic Contradiction & Gap Detection**
-   - **Agent Prompt**: *"Detect contradictions and evidence gaps in our AI assistant decision."*
-   - **WebMCP Tool Invoked**: `detect_contradictions`
-   - **Result**: Algorithmic scan surfaces pricing contradictions and missing security audit evidence.
-
-4. **Step 4: Evaluate Weight Scenarios & Sensitivity**
-   - **Agent Prompt**: *"Evaluate the decision under an Enterprise Privacy-First scenario."*
-   - **WebMCP Tool Invoked**: `evaluate_scenario` or `run_sensitivity_analysis`
-   - **Result**: Demonstrates crossover where Gemini Code Assist leads when privacy weight is raised above 35%.
-
-5. **Step 5: Test Governance Approval Boundary (The Stop Sign)**
-   - **Agent Prompt**: *"Propose updating the Privacy & Control weight to 45%."*
-   - **WebMCP Tool Invoked**: `propose_weight_change`
-   - **Result**: The agent **cannot** directly mutate active weights. Instead, a **Pending Proposal** card appears in the UI with an **Approve** and **Reject** button.
-
-6. **Step 6: Human Approval & Real-Time Recalculation**
-   - Click **Approve change** on the yellow Approval Boundary card.
-   - Watch the workspace recalculate in real time: **Gemini Code Assist** takes the lead, confidence updates, and audit trail logs the human approval.
-
-7. **Step 7: Generate Executive Decision Brief**
-   - Navigate to `/brief` or issue **Agent Prompt**: *"Generate an explainable decision brief."*
-   - **WebMCP Tool Invoked**: `generate_decision_brief`
-   - **Result**: Compiles an executive brief detailing options evaluated, key evidence, remaining uncertainty, and posture.
+1. **Human-in-the-loop boundary.** Consequential actions — weight edits, final picks — require explicit human sign-off, enforced in the tool execution path via `requiresHumanApproval`, not just in the UI.
+2. **Deterministic computation.** Scores, confidence, and risk come from the scoring engine, not from unvalidated model output.
+3. **Audit trail.** Every evidence addition, priority edit, and proposal resolution is timestamped and attributed to an actor — human or agent.
 
 ---
 
-## 🧰 WebMCP Tool Catalog (13 Registered Tools)
+## Repository structure
 
-| Category | Tool Name | Description & Intent |
-| --- | --- | --- |
-| **Discovery** | `get_decision_state` | Reads active decision options, criteria weights, findings, and current leader. |
-| **Discovery** | `get_evidence` | Inspects source claims, confidence %, reliability %, and verification status. |
-| **Discovery** | `search_evidence` | Filters evidence items by keyword query or supported option ID. |
-| **Evidence** | `add_evidence` | Submits new source-backed evidence claim to recalculate findings. |
-| **Analysis** | `compare_options` | Computes deterministic weighted scores for all options. |
-| **Analysis** | `detect_contradictions` | Algorithmically compares evidence text to surface conflicts & missing gaps. |
-| **Analysis** | `run_sensitivity_analysis` | Tests recommendation stability across weight ranges for any criterion. |
-| **Analysis** | `analyze_decision_risk` | Computes risk level, unverified sources count, and risk factors. |
-| **Analysis** | `evaluate_scenario` | Ranks options under standard presets ("Enterprise Privacy", "Cost-Optimized", etc.). |
-| **Governance** | `propose_weight_change` | Prepares criteria weight change for human approval (does not auto-apply). |
-| **Governance** | `propose_decision` | Proposes final decision choice for human sign-off. |
-| **Governance** | `request_human_review` | Pauses consequential workflow at the human approval boundary. |
-| **Output** | `generate_decision_brief` | Compiles live decision state into an explainable executive brief. |
+- `artifacts/proofpilot/src/` — React workspace, landing page, developer trace view, WebMCP tool registry (`src/lib/webmcp.ts`)
+- `artifacts/api-server/src/lib/decision-engine.ts` — scoring, sensitivity sweeps, contradiction detection, scenario engine
+- `artifacts/api-server/src/lib/__tests__/decision-engine.test.ts` — automated test suite
+- `artifacts/api-server/src/routes/decisions.ts` — REST API
 
 ---
 
-## 🏗️ Architecture & Technical Stack
-
-```text
-  [ Human User ] ──( Priorities & Approvals )──┐
-                                              ▼
-[ WebMCP Host / Agent ] ──( 13 WebMCP Tools )──► [ ProofPilot Workspace ]
-                                                      │
-                                                      ▼
-                                            [ Express API Server ]
-                                                      │
-                                                      ▼
-                                           [ Decision Engine ]
-                                  ( Scoring · Sensitivity · Contradictions )
-                                                      │
-                                                      ▼
-                                             [ PostgreSQL / DB ]
-```
-
-- **Frontend**: React 18, Vite, Tailwind CSS, Lucide Icons, Wouter Routing, TanStack Query.
-- **Backend**: Express, TypeScript, Zod Validation, Vitest.
-- **Engine**: Deterministic multi-criteria decision analysis (MCDA), dynamic evidence claim analysis, scenario reweighting.
-
----
-
-## 📁 Repository Structure
-
-- `artifacts/proofpilot/src/` — React decision workspace, landing page, developer tools log, decision brief, and WebMCP tool registry (`src/lib/webmcp.ts`)
-- `artifacts/api-server/src/lib/decision-engine.ts` — Core computational engine (scoring, sensitivity sweeps, dynamic contradiction & gap detection, scenario engine)
-- `artifacts/api-server/src/lib/decision-engine.test.ts` — Comprehensive Vitest automated test suite
-- `artifacts/api-server/src/routes/decisions.ts` — Express REST API endpoints
-
----
-
-## 🔐 Security & Governance Principles
-
-1. **Human-in-the-Loop Boundary**: Consequential actions (weight edits, final option choices) require explicit human sign-off.
-2. **Deterministic Computation**: Scores and confidence values are computed deterministically by the scoring engine rather than unvalidated model output.
-3. **Audit Trail**: Every evidence addition, priority edit, and proposal resolution is logged with timestamps and actor roles.
-
----
-
-## 📄 License
+## License
 
 MIT. See [LICENSE](./LICENSE).
