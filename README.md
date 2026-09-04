@@ -104,18 +104,110 @@ See `artifacts/proofpilot/src/lib/webmcp.ts` for all 13 registrations.
 
 **Live demo:** https://proofpilot-kappa.vercel.app
 
-Test the WebMCP integration through either:
+### How WebMCP Works in ChatGPT Desktop In-App Browser
 
-* **ChatGPT desktop app's in-app browser**, where the site's WebMCP tools can be discovered
-* **Google Chrome 149+**, with `chrome://flags/#enable-webmcp-testing` set to Enabled, then restart the browser
+ProofPilot is built natively for WebMCP host environments like the **ChatGPT Desktop App's in-app browser**:
 
-Open a decision, then ask your agent something like:
+1. **Open the Live Demo:** Navigate to `https://proofpilot-kappa.vercel.app` inside the ChatGPT desktop app browser.
+2. **Automatic Tool Discovery:** As the page loads, ProofPilot automatically registers all 13 tools on `document.modelContext`. ChatGPT's agent host detects the available tool catalog across all 4 tiers (Discovery, Analysis, Governance, Output).
+3. **Interact via Natural Language:** Prompt the ChatGPT agent directly in your chat:
+   * *"Inspect the active decision state and summarize the evidence."* — ChatGPT invokes `get_decision_state` and `get_evidence`.
+   * *"Detect contradictions and evidence gaps in this decision."* — ChatGPT invokes `detect_contradictions`.
+   * *"Propose raising the Privacy & Control weight to 45%."* — ChatGPT invokes `propose_weight_change`.
+4. **Observe Real-Time Functioning & Logs:**
+   * **In ChatGPT Chat UI:** ChatGPT displays tool-execution badges (e.g., `Used tool propose_weight_change`).
+   * **On the Live Webpage:** The page state updates dynamically (e.g., a glowing **Pending Proposal** card appears for human approval).
+   * **In ProofPilot Developer Trace (`/developer`):** Open the `/developer` route inside the page to inspect real-time JSON traces of ChatGPT's tool invocations.
 
-* *"Inspect the active decision state and summarize the evidence."*
-* *"Detect contradictions and evidence gaps in this decision."*
-* *"Propose raising the Privacy & Control weight to 45%."* — watch it stop at the approval card instead of applying directly.
+### How WebMCP Works in Google Chrome (149+)
 
-The `/developer` route shows the live tool registry and call trace if you want to inspect the WebMCP tool interactions as they happen.
+1. Enable `chrome://flags/#enable-webmcp-testing` in Google Chrome 149+ and restart browser.
+2. Open `https://proofpilot-kappa.vercel.app`.
+3. Interact via WebMCP extensions/hosts or inspect registered tools via DevTools Console (`document.modelContext.getTools()`) or the `/developer` tab.
+
+---
+
+## How to Access Logs & Inspect WebMCP Execution Results
+
+If you want to view, inspect, and verify the live logs and functioning results of ProofPilot's WebMCP tools during agent execution or manual testing, there are three primary observation channels:
+
+### 1. Browser Developer Console (`F12` / `Ctrl+Shift+I`)
+Open your browser's Developer Tools (`F12` or `Right-Click -> Inspect -> Console tab`) to view live execution logs and manually run any tool directly:
+* **List all registered WebMCP tools:**
+  ```javascript
+  console.log(window.__WEBMCP_TOOLS__);
+  // or via standard WebMCP modelContext API:
+  console.log(document.modelContext.getTools());
+  ```
+* **Execute any tool manually & log its return result:**
+  ```javascript
+  const tools = document.modelContext.getTools();
+  const getProposalTool = tools.find(t => t.name === 'propose_weight_change');
+  const result = await getProposalTool.execute({ criterionId: 'privacy', proposedWeight: 45, reason: 'Manual Console Test' });
+  console.log('Tool Result:', result);
+  ```
+* **Listen to real-time WebMCP execution events in console:**
+  ```javascript
+  window.addEventListener('proofpilot:webmcp-call', (event) => {
+    console.log('[WebMCP Tool Call Log]:', event.detail);
+  });
+  ```
+
+### 2. Built-in ProofPilot Developer Dashboard (`/developer` Route)
+Navigate to the `/developer` page in the application UI (or click the **Developer** tab in the top navigation):
+* **Live Call Trace Timeline:** Displays a real-time log of every WebMCP tool invocation, complete with timestamps, tool name, input arguments, execution status (`completed` or `error`), and returned payload.
+* **Interactive Tool Registry:** Inspect all 13 registered tool schemas, descriptions, and parameter definitions directly in the UI.
+
+### 3. Backend API & Server Terminal Logs
+When running locally (`pnpm --filter @workspace/api-server dev`), the terminal window logs all HTTP REST calls made by WebMCP handlers and backend decision engine calculations (such as weighted scoring, sensitivity sweeps, and decision persistence).
+
+---
+
+### Functioning & Result Inspection by WebMCP Tool Category
+
+ProofPilot organizes its 13 WebMCP tools into 4 distinct functional tiers. Here is how each category functions, how to test it, and what results to expect in your console and UI logs:
+
+#### Category 1: Discovery & State Inspection Tools
+* **Tools:** `get_decision_state`, `get_evidence`, `search_evidence`
+* **Functioning:** Read-only retrieval of active decision choices, criteria weights, evidence coverage, source reliability, and top recommendations. Zero side effects.
+* **How to Test in Console:**
+  ```javascript
+  await document.modelContext.getTools().find(t => t.name === 'get_decision_state').execute({});
+  ```
+* **Expected Log Result:** Returns complete workspace state JSON containing options, criteria weights, evidence sources, findings, and `recommendation` object (e.g. `{ optionName: "Gemini 1.5 Pro", score: 84.2 }`).
+
+#### Category 2: Evidence & Analysis Tools
+* **Tools:** `add_evidence`, `compare_options`, `detect_contradictions`, `run_sensitivity_analysis`, `analyze_decision_risk`, `evaluate_scenario`
+* **Functioning:** Evaluates evidence claims, detects conflicting sources, computes overall decision risk, executes sensitivity sweeps across priority weight ranges, and benchmarks options under preset scenarios (`enterprise-privacy`, `cost-optimized`, etc.). Also allows agents to register new source evidence.
+* **How to Test in Console:**
+  ```javascript
+  await document.modelContext.getTools().find(t => t.name === 'run_sensitivity_analysis').execute({ criterionId: 'privacy' });
+  ```
+* **Expected Log Result:**
+  * **Sensitivity Analysis:** Returns a `points` array showing how recommendation winners shift across weight steps (10% to 50%).
+  * **Risk Analysis:** Returns `overallRiskLevel` (`"Elevated"` or `"Low"`), count of unverified sources, and detailed risk factor items.
+  * **Contradiction Detection:** Returns an array of conflicting evidence claims and information gaps.
+
+#### Category 3: Governance Tools (Human-in-the-Loop)
+* **Tools:** `propose_weight_change`, `propose_decision`, `request_human_review`
+* **Functioning:** Handles all consequential actions. **Crucially, these tools NEVER mutate active decision state directly.** They create pending proposal objects that stop at the human approval boundary.
+* **How to Test in Console:**
+  ```javascript
+  await document.modelContext.getTools().find(t => t.name === 'propose_weight_change').execute({ criterionId: 'privacy', proposedWeight: 45, reason: 'Security requirement' });
+  ```
+* **Expected Log Result & UI Behavior:**
+  * **Log Output:** Returns `{ ok: true, action: { id, title: "Raise Privacy & Control to 45%", status: "Pending" } }`.
+  * **UI Result:** A glowing **Pending Proposal Card** immediately appears in the workspace UI with **Approve** and **Reject** buttons.
+  * **Governance Check:** Active decision state remains unchanged until a human clicks **Approve**.
+
+#### Category 4: Output & Executive Brief Tools
+* **Tools:** `generate_decision_brief`
+* **Functioning:** Compiles live workspace state, evidence coverage, open contradictions, and pending proposals into an executive-ready report summary.
+* **How to Test in Console:**
+  ```javascript
+  await document.modelContext.getTools().find(t => t.name === 'generate_decision_brief').execute({});
+  ```
+* **Expected Log Result:** Returns an executive brief JSON object with `title`, `recommendation`, `evidenceSummary`, `openContradictions`, and `pendingHumanActions`.
 
 ---
 
