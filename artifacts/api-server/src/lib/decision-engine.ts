@@ -70,6 +70,14 @@ export type ActivityEntry = {
   timestamp: string;
 };
 
+export type Assumption = {
+  id: string;
+  title: string;
+  detail: string;
+  verified: boolean;
+  impact: string;
+};
+
 export type DecisionState = {
   id: string;
   title: string;
@@ -81,6 +89,7 @@ export type DecisionState = {
   criteria: Criterion[];
   evidence: Evidence[];
   findings: Finding[];
+  assumptions?: Assumption[];
   recommendation: Recommendation;
   pendingActions: PendingAction[];
   activity: ActivityEntry[];
@@ -429,6 +438,12 @@ export function createDemoState(): DecisionState {
       whatCouldChange: "",
     },
     pendingActions: [],
+    assumptions: [
+      { id: "asm-1", title: "Developer velocity is top priority", verified: true, detail: "Weighted at 35% by team consensus.", impact: "High" },
+      { id: "asm-2", title: "Public cloud AI endpoints permitted", verified: true, detail: "Governance permits SOC2 Type II endpoints with zero retention.", impact: "High" },
+      { id: "asm-3", title: "Seat pricing scales linearly across 100+ seats", verified: false, detail: "Enterprise tiers require custom quote verification.", impact: "Medium" },
+      { id: "asm-4", title: "Editor switching friction is manageable", verified: false, detail: "Assumes 80%+ of engineering team willing to adopt Cursor/VS Code.", impact: "Medium" },
+    ],
     activity: [],
   };
   return addActivity(

@@ -255,6 +255,7 @@ router.patch("/decisions/:decisionId", async (req, res): Promise<void> => {
   }
   if (parsed.data.title) state = { ...state, title: parsed.data.title };
   if (parsed.data.status) state = { ...state, status: parsed.data.status };
+  if ((req.body as any).assumptions) state = { ...state, assumptions: (req.body as any).assumptions };
   state = recalculate(
     addActivity(
       state,
@@ -265,6 +266,26 @@ router.patch("/decisions/:decisionId", async (req, res): Promise<void> => {
   );
   await saveState(row.id, state);
   res.json(UpdateDecisionResponse.parse(state));
+});
+
+router.patch("/decisions/:decisionId/assumptions", async (req, res): Promise<void> => {
+  const { assumptions } = req.body as { assumptions: any[] };
+  const row = await findDecision(req.params.decisionId);
+  if (!row) {
+    res.status(404).json({ error: "Decision not found", code: "NOT_FOUND" });
+    return;
+  }
+  const currentState = asState(row.state);
+  const updatedState = recalculate(
+    addActivity(
+      { ...currentState, assumptions },
+      "Human",
+      "Assumptions updated",
+      `Assumption register updated (${assumptions?.length ?? 0} active assumptions).`,
+    ),
+  );
+  await saveState(row.id, updatedState);
+  res.json(updatedState);
 });
 
 router.post("/decisions/:decisionId/analyze", async (req, res): Promise<void> => {

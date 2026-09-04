@@ -98,6 +98,7 @@ export default function WorkspacePage() {
         evidence: Array.isArray(detail.data.evidence) ? detail.data.evidence : [],
         findings: Array.isArray(detail.data.findings) ? detail.data.findings : [],
         pendingActions: Array.isArray(detail.data.pendingActions) ? detail.data.pendingActions : [],
+        assumptions: Array.isArray((detail.data as any).assumptions) ? (detail.data as any).assumptions : (getDecisionStore(activeId).assumptions ?? demoDecision.assumptions),
       });
     } else {
       setDecision(getDecisionStore(activeId));

@@ -432,7 +432,7 @@ export function proposeDecisionStore(id: string, data: { optionId: string; reaso
   return newAction;
 }
 
-export function updateAssumptionsStore(id: string, assumptions: Array<{ id: string; statement: string; status: string; owner?: string }>): DecisionState {
+export function updateAssumptionsStore(id: string, assumptions: any[]): DecisionState {
   const decision = getDecisionStore(id);
   const updatedDecision: DecisionState = {
     ...decision,
@@ -445,6 +445,12 @@ export function updateAssumptionsStore(id: string, assumptions: Array<{ id: stri
   if (index >= 0) items[index] = updatedDecision;
   else items.unshift(updatedDecision);
   saveLocalDecisions(items);
+
+  addLocalActivity(id, {
+    actor: 'Madhavan',
+    action: 'Updated assumptions register',
+    detail: `${assumptions.length} active decision assumptions saved.`,
+  });
 
   return updatedDecision;
 }

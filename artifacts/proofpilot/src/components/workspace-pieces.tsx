@@ -26,6 +26,7 @@ import { useEffect, useState } from 'react';
 import type { DecisionState, Evidence, PendingAction, SensitivityAnalysis } from '@workspace/api-client-react';
 import { cn } from '@/lib/utils';
 import { formatRelative } from '@/lib/demo';
+import { updateAssumptionsStore } from '@/lib/store';
 
 export function ScorePill({ value, emphasized = false }: { value: number; emphasized?: boolean }) {
   return <span className={cn('font-mono text-[11px] font-semibold', emphasized ? 'text-[#a97922]' : 'text-foreground/65')}>{value.toFixed(1)}</span>;
@@ -290,6 +291,44 @@ export function PriorityEditor({ decision, onCommit, isSaving }: { decision: Dec
 
 export function WhyPanel({ decision }: { decision: DecisionState }) {
   const rec = decision.recommendation;
+
+  const optionScores = (decision.options || [])
+    .map((opt) => {
+      const total = (decision.criteria || []).reduce(
+        (sum, c) => sum + (opt.scores?.[c.id] ?? 0) * (c.weight / 100),
+        0
+      );
+      return { ...opt, score: total };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const topScore = optionScores[0]?.score ?? rec.score ?? 0;
+  const runnerUpScore = optionScores[1]?.score ?? 0;
+  const leadGap = Math.max(0, topScore - runnerUpScore);
+  const confidence = rec.evidenceConfidence ?? 75;
+
+  let stabilityLabel = 'moderate';
+  let stableWidth = 50;
+  let swingWidth = 25;
+  let fragileWidth = 25;
+
+  if (leadGap >= 6.5 && confidence >= 80) {
+    stabilityLabel = 'high';
+    stableWidth = Math.min(85, Math.round(65 + leadGap * 2));
+    swingWidth = Math.round((100 - stableWidth) * 0.6);
+    fragileWidth = 100 - stableWidth - swingWidth;
+  } else if (leadGap < 3.5 || confidence < 65) {
+    stabilityLabel = 'fragile';
+    stableWidth = Math.max(15, Math.round(leadGap * 6));
+    swingWidth = Math.round((100 - stableWidth) * 0.5);
+    fragileWidth = 100 - stableWidth - swingWidth;
+  } else {
+    stabilityLabel = 'moderate';
+    stableWidth = Math.round(40 + leadGap * 2.5);
+    swingWidth = Math.round((100 - stableWidth) * 0.55);
+    fragileWidth = 100 - stableWidth - swingWidth;
+  }
+
   return (
     <section className="grid gap-5 border-b border-border bg-background px-5 py-8 md:px-10 lg:grid-cols-[1.1fr_.9fr]">
       <div className="rounded-xl border border-border bg-card p-5 md:p-6">
@@ -329,12 +368,12 @@ export function WhyPanel({ decision }: { decision: DecisionState }) {
         <div className="mt-6 border-t border-[#e4d3a5] pt-4">
           <div className="flex items-center justify-between text-[10px] font-semibold text-[#725b2e]">
             <span>Stability under current priorities</span>
-            <span className="font-mono">moderate</span>
+            <span className="font-mono">{stabilityLabel}</span>
           </div>
           <div className="mt-3 flex h-2 gap-1">
-            <span className="w-[50%] rounded-l bg-[#d9a441]" />
-            <span className="w-[25%] bg-[#e2c984]" />
-            <span className="w-[25%] rounded-r bg-[#f0e6c9]" />
+            <span style={{ width: `${stableWidth}%` }} className="rounded-l bg-[#d9a441]" />
+            <span style={{ width: `${swingWidth}%` }} className="bg-[#e2c984]" />
+            <span style={{ width: `${fragileWidth}%` }} className="rounded-r bg-[#f0e6c9]" />
           </div>
           <div className="mt-3 flex justify-between font-mono text-[9px] text-[#896724]/70">
             <span>fragile</span>
@@ -503,12 +542,50 @@ export function RiskAndAssumptionsPanel({
   const [newAssumptionDetail, setNewAssumptionDetail] = useState('');
   const [showAddAssumption, setShowAddAssumption] = useState(false);
 
-  const [assumptions, setAssumptions] = useState([
+  const defaultAssumptions = [
     { id: 'asm-1', title: 'Developer velocity is top priority', verified: true, detail: 'Weighted at 35% by team consensus.', impact: 'High' },
     { id: 'asm-2', title: 'Public cloud AI endpoints permitted', verified: true, detail: 'Governance permits SOC2 Type II endpoints with zero retention.', impact: 'High' },
     { id: 'asm-3', title: 'Seat pricing scales linearly across 100+ seats', verified: false, detail: 'Enterprise tiers require custom quote verification.', impact: 'Medium' },
     { id: 'asm-4', title: 'Editor switching friction is manageable', verified: false, detail: 'Assumes 80%+ of engineering team willing to adopt Cursor/VS Code.', impact: 'Medium' },
-  ]);
+  ];
+
+  const getNormalizedAssumptions = (rawAssumptions?: any[]) => {
+    if (rawAssumptions && rawAssumptions.length > 0) {
+      return rawAssumptions.map((a: any) => ({
+        id: a.id || `asm-${Math.random()}`,
+        title: a.title || a.statement || 'Assumption',
+        detail: a.detail || 'Context statement',
+        verified: a.verified ?? (a.status === 'validated'),
+        impact: a.impact || 'Medium',
+      }));
+    }
+    return defaultAssumptions;
+  };
+
+  const [assumptions, setAssumptions] = useState(() => getNormalizedAssumptions(decision.assumptions));
+
+  useEffect(() => {
+    if (decision.assumptions && decision.assumptions.length > 0) {
+      setAssumptions(getNormalizedAssumptions(decision.assumptions));
+    }
+  }, [decision.assumptions]);
+
+  const saveAssumptions = async (nextAssumptions: typeof assumptions) => {
+    setAssumptions(nextAssumptions);
+    try {
+      if (decision.id) {
+        await fetch(`/api/decisions/${decision.id}/assumptions`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assumptions: nextAssumptions }),
+        });
+      }
+    } catch (_e) {
+      // fallback to store
+      updateAssumptionsStore(decision.id, nextAssumptions);
+    }
+    onRefresh?.();
+  };
 
   const [handledChallenges, setHandledChallenges] = useState<Record<string, boolean>>({});
 
@@ -574,12 +651,11 @@ export function RiskAndAssumptionsPanel({
   };
 
   const toggleAssumption = (id: string) => {
-    setAssumptions((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, verified: !a.verified } : a))
-    );
+    const next = assumptions.map((a) => (a.id === id ? { ...a, verified: !a.verified } : a));
+    saveAssumptions(next);
   };
 
-  const addAssumption = (e: React.FormEvent) => {
+  const addAssumption = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAssumptionTitle.trim()) return;
     const item = {
@@ -589,10 +665,11 @@ export function RiskAndAssumptionsPanel({
       verified: false,
       impact: 'Medium',
     };
-    setAssumptions((prev) => [item, ...prev]);
+    const next = [item, ...assumptions];
     setNewAssumptionTitle('');
     setNewAssumptionDetail('');
     setShowAddAssumption(false);
+    await saveAssumptions(next);
   };
 
   const challenges = [
